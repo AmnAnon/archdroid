@@ -80,17 +80,42 @@ check_existing_installation() {
         current_version=$(get_current_version "$ARCH_PATH")
 
         if [ "$current_version" != "none" ]; then
-            ok "Arch Linux already installed"
-            info "Current installation detected - use 'archdroid update' to refresh"
+            ok "Arch Linux already installed (ArchDroid-managed)"
+            info "Use 'archdroid update' to refresh, or 'archdroid bootstrap --force' to reinstall"
             echo "SKIP: Already installed" >> "$BOOTSTRAP_LOG"
             return 1
-        else
-            warn "Installation exists but no version lock found"
-            info "Proceeding with bootstrap (will replace existing)"
         fi
+
+        # Rootfs exists but has no ArchDroid version lock — could be the user's
+        # existing chroot system installed by another tool. Refuse by default.
+        if [ "${ARCHDROID_FORCE:-0}" != "1" ]; then
+            echo ""
+            fail "Existing Arch installation detected at: $ARCH_PATH"
+            fail "This system was not installed by ArchDroid — refusing to overwrite."
+            echo ""
+            echo "  To protect your data, choose one of:"
+            echo ""
+            echo "  1. Back up first, then force reinstall:"
+            echo "       cp -a $ARCH_PATH ${ARCH_PATH}.backup"
+            echo "       ARCHDROID_FORCE=1 archdroid bootstrap"
+            echo ""
+            echo "  2. Install to a separate test path (safest):"
+            echo "       export ARCH_PATH=/data/local/arch-test"
+            echo "       archdroid bootstrap"
+            echo ""
+            echo "  3. Force reinstall without backup (destructive):"
+            echo "       ARCHDROID_FORCE=1 archdroid bootstrap"
+            echo ""
+            echo "FATAL: Refusing to overwrite unmanaged rootfs" >> "$BOOTSTRAP_LOG"
+            exit 1
+        fi
+
+        warn "ARCHDROID_FORCE=1 set — overwriting existing unmanaged rootfs"
+        warn "Path: $ARCH_PATH"
+        echo "WARN: Forced overwrite of unmanaged rootfs" >> "$BOOTSTRAP_LOG"
     fi
 
-    info "No existing installation found - proceeding with bootstrap"
+    info "No existing installation found — proceeding with bootstrap"
     echo "INFO: No existing installation" >> "$BOOTSTRAP_LOG"
     return 0
 }

@@ -68,9 +68,11 @@ if ! echo "$PATH" | grep -q "/data/local/bin"; then
 
   # Detect which shell config to write to
   SHELL_CONFIG=""
+  # Check Termux home explicitly (HOME may resolve to /root when running as su)
+  TERMUX_HOME="/data/data/com.termux/files/home"
   for candidate in \
-    "/data/data/com.termux/files/home/.bashrc" \
-    "/data/data/com.termux/files/home/.bash_profile" \
+    "${TERMUX_HOME}/.bashrc" \
+    "${TERMUX_HOME}/.bash_profile" \
     "$HOME/.bashrc" \
     "$HOME/.bash_profile" \
     "$HOME/.profile"; do
@@ -121,9 +123,9 @@ if [ -t 0 ]; then
 fi
 
 info "To set up manually, run:"
-echo "  ${BOLD}archdroid up${RESET}      # Full setup in one command"
+echo -e "  ${BOLD}archdroid up${RESET}        # Full setup in one command"
 echo ""
 echo "  Or step by step:"
-echo "  ${BOLD}archdroid bootstrap${RESET}   # Install Arch rootfs"
-echo "  ${BOLD}archdroid start${RESET}       # Enter chroot"
+echo -e "  ${BOLD}archdroid bootstrap${RESET}   # Install Arch rootfs"
+echo -e "  ${BOLD}archdroid start${RESET}       # Enter chroot"
 echo ""
