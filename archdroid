@@ -4,20 +4,14 @@
 # ║  Unified Command-Line Interface for ArchDroid System            ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
-# ─── STRICT MODE ─────────────────────────────────────────────────────────────
 set -euo pipefail
 
-# ─── CONFIGURATION ───────────────────────────────────────────────────────────
-# Robust script location resolution that handles symlinks properly
+# ─── SCRIPT LOCATION (symlink-safe) ──────────────────────────────────────────
 if command -v realpath >/dev/null 2>&1; then
-    # Use realpath if available (most modern systems)
     SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
 else
-    # Fallback for systems without realpath
     SCRIPT_PATH="${BASH_SOURCE[0]}"
-    # Follow symlinks manually
     while [ -L "$SCRIPT_PATH" ]; do
-        local link_target
         link_target="$(readlink "$SCRIPT_PATH")"
         if [[ "$link_target" == /* ]]; then
             SCRIPT_PATH="$link_target"
@@ -30,20 +24,18 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 CORE_DIR="$SCRIPT_DIR/core"
 
-# Default paths
 export ARCH_PATH="${ARCH_PATH:-/data/local/arch}"
 
-# Load version info for display
 source "${CORE_DIR}/versions.sh"
 
-# ─── COLORS ──────────────────────────────────────────────────────────────────
+# ─── OUTPUT HELPERS ──────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 
-ok()   { echo -e "${GREEN}  ✔  $*${RESET}"; }
-warn() { echo -e "${YELLOW}  ⚠  $*${RESET}"; }
-fail() { echo -e "${RED}  ✘  $*${RESET}"; }
-info() { echo -e "${CYAN}  ▶  $*${RESET}"; }
+ok()     { echo -e "${GREEN}  ✔  $*${RESET}"; }
+warn()   { echo -e "${YELLOW}  ⚠  $*${RESET}"; }
+fail()   { echo -e "${RED}  ✘  $*${RESET}"; }
+info()   { echo -e "${CYAN}  ▶  $*${RESET}"; }
 
 banner() {
     echo -e "${BOLD}${CYAN}"
@@ -53,7 +45,7 @@ banner() {
     echo -e "${RESET}"
 }
 
-# ─── COMMAND FUNCTIONS ───────────────────────────────────────────────────────
+# ─── COMMANDS ────────────────────────────────────────────────────────────────
 
 cmd_version() {
     banner "ArchDroid v$ARCH_VERSION"
@@ -63,11 +55,9 @@ cmd_version() {
     echo "  Install Path: $ARCH_PATH"
     echo "  Core Scripts: $CORE_DIR"
     echo "  Target Version: $ARCH_VERSION"
-
     local current_version
-    current_version=$(get_current_version "/data/local/archdroid-state" 2>/dev/null || echo "none")
+    current_version=$(get_current_version "$ARCH_PATH" 2>/dev/null || echo "none")
     echo "  Installed Version: $current_version"
-
     echo ""
     echo "Trust Model:"
     echo "  External verification required for production use"
@@ -77,63 +67,60 @@ cmd_version() {
 cmd_up() {
     banner "ArchDroid Full Setup + Update"
 
-    # ARCHDROID_AUTO_SELINUX=1 lets the whole flow run without interactive prompts
     export ARCHDROID_AUTO_SELINUX="${ARCHDROID_AUTO_SELINUX:-1}"
 
     # ── Step 1: Bootstrap if rootfs is missing ──────────────────────────────
     if [ ! -f "$ARCH_PATH/bin/bash" ]; then
         info "No rootfs found — running bootstrap first..."
         echo ""
-        "${CORE_DIR}/bootstrap.sh" || {
+        ARCHDROID_BOOTSTRAP_ALLOWED=1 "${CORE_DIR}/bootstrap.sh" || {
             fail "Bootstrap failed — run 'archdroid doctor' for details"
             exit 1
         }
         echo ""
     else
-        # Rootfs exists — check if it's ArchDroid-managed before doing anything
         local current_version
         current_version=$(get_current_version "$ARCH_PATH" 2>/dev/null || echo "none")
+
         if [ "$current_version" = "none" ] && [ "${ARCHDROID_FORCE:-0}" != "1" ]; then
             echo ""
             fail "Existing Arch installation detected at: $ARCH_PATH"
             fail "This system was not installed by ArchDroid — refusing to modify."
             echo ""
-            echo "  To use 'archdroid up' safely:"
+            echo "  Run this to test safely (separate path, no risk):"
             echo ""
-            echo "  1. Install to a separate test path:"
-            echo "       export ARCH_PATH=/data/local/arch-test"
-            echo "       archdroid up"
+            echo -e "    ${BOLD}export ARCH_PATH=/data/local/arch-test && archdroid up${RESET}"
             echo ""
-            echo "  2. Force (will overwrite your existing system):"
-            echo "       ARCHDROID_FORCE=1 archdroid up"
+            echo "  Or to force overwrite (destructive):"
+            echo ""
+            echo -e "    ${BOLD}ARCHDROID_FORCE=1 archdroid up${RESET}"
             echo ""
             exit 1
         elif [ "$current_version" = "none" ] && [ "${ARCHDROID_FORCE:-0}" = "1" ]; then
             echo ""
-            warn "ARCHDROID_FORCE=1 set — preparing to overwrite existing unmanaged rootfs"
-            warn "Path: $ARCH_PATH"
+            warn "ARCHDROID_FORCE=1 — preparing to overwrite unmanaged rootfs at $ARCH_PATH"
             echo ""
             if [ -t 0 ]; then
-                printf "  ⚠  This will overwrite the existing system at $ARCH_PATH. Continue? [y/N]: "
+                printf "  ⚠  This will overwrite the existing system. Continue? [y/N]: "
                 read -r confirm </dev/tty
                 if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
                     info "Aborted."
                     exit 1
                 fi
             else
-                fail "ARCHDROID_FORCE=1 requires interactive confirmation — cannot proceed non-interactively"
+                fail "ARCHDROID_FORCE=1 requires interactive confirmation"
                 exit 1
             fi
         fi
-        ok "Rootfs detected at $ARCH_PATH (version: $current_version)"
+        ok "Rootfs: $ARCH_PATH (version: $current_version)"
     fi
 
-    # ── Step 2: SELinux — fix automatically (user opted in by running 'up') ─
+    # ── Step 2: SELinux ──────────────────────────────────────────────────────
     if command -v getenforce >/dev/null 2>&1; then
         local selinux_mode
         selinux_mode=$(getenforce 2>/dev/null || echo "unknown")
         if [ "$selinux_mode" = "Enforcing" ]; then
-            warn "SELinux is Enforcing — setting to Permissive (temporary, resets on reboot)"
+            warn "SELinux Enforcing → setting Permissive (temporary, resets on reboot)"
             if setenforce 0 2>/dev/null; then
                 ok "SELinux → Permissive"
             else
@@ -145,14 +132,14 @@ cmd_up() {
         fi
     fi
 
-    # ── Step 3: Enforce mounts ───────────────────────────────────────────────
+    # ── Step 3: Mounts ───────────────────────────────────────────────────────
     info "Setting up mount points..."
-    local mount_dirs=("proc" "sys" "dev" "dev/pts" "tmp")
-    for d in "${mount_dirs[@]}"; do mkdir -p "$ARCH_PATH/$d"; done
+    local d
+    for d in proc sys dev dev/pts tmp; do mkdir -p "$ARCH_PATH/$d"; done
 
-    mountpoint -q "$ARCH_PATH/proc"    || mount -t proc  proc    "$ARCH_PATH/proc"    2>/dev/null && ok "proc"    || warn "proc mount failed"
-    mountpoint -q "$ARCH_PATH/sys"     || mount -t sysfs sysfs   "$ARCH_PATH/sys"     2>/dev/null && ok "sys"     || warn "sys mount failed"
-    mountpoint -q "$ARCH_PATH/dev"     || mount --rbind  /dev    "$ARCH_PATH/dev"     2>/dev/null && ok "dev"     || warn "dev mount failed"
+    mountpoint -q "$ARCH_PATH/proc"    || mount -t proc  proc     "$ARCH_PATH/proc"    2>/dev/null && ok "proc"    || warn "proc mount failed"
+    mountpoint -q "$ARCH_PATH/sys"     || mount -t sysfs sysfs    "$ARCH_PATH/sys"     2>/dev/null && ok "sys"     || warn "sys mount failed"
+    mountpoint -q "$ARCH_PATH/dev"     || mount --rbind  /dev     "$ARCH_PATH/dev"     2>/dev/null && ok "dev"     || warn "dev mount failed"
     mountpoint -q "$ARCH_PATH/dev/pts" || mount --rbind  /dev/pts "$ARCH_PATH/dev/pts" 2>/dev/null && ok "dev/pts" || warn "dev/pts mount failed"
     mountpoint -q "$ARCH_PATH/tmp"     || mount -t tmpfs -o size=512m,mode=1777 tmpfs "$ARCH_PATH/tmp" 2>/dev/null && ok "tmp" || warn "tmp mount failed"
 
@@ -163,7 +150,7 @@ cmd_up() {
         ok "DNS configured"
     fi
 
-    # ── Step 5: Enter chroot and run pacman -Syu ─────────────────────────────
+    # ── Step 5: Enter and update ─────────────────────────────────────────────
     echo ""
     info "Entering Arch Linux and updating system..."
     echo ""
@@ -172,17 +159,15 @@ cmd_up() {
         HOME="/root" \
         PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
         TERM="${TERM:-xterm-256color}" \
-        LANG="C.UTF-8" \
-        LC_ALL="C.UTF-8" \
-        USER="root" \
-        SHELL="/bin/bash" \
+        LANG="C.UTF-8" LC_ALL="C.UTF-8" \
+        USER="root" SHELL="/bin/bash" \
         /bin/bash -c "pacman-key --init 2>/dev/null; pacman-key --populate archlinuxarm 2>/dev/null; pacman -Syu --noconfirm"
 }
 
-
+cmd_bootstrap() {
     banner "ArchDroid Bootstrap"
     info "Starting secure bootstrap process..."
-    exec "${CORE_DIR}/bootstrap.sh" "$@"
+    ARCHDROID_BOOTSTRAP_ALLOWED=1 exec "${CORE_DIR}/bootstrap.sh" "$@"
 }
 
 cmd_start() {
@@ -218,12 +203,10 @@ cmd_reset_trust() {
 cmd_status() {
     banner "ArchDroid System Status"
 
-    # Installation status — check both presence and chroot validity
     if [ -f "$ARCH_PATH/bin/bash" ]; then
         local current_version
         current_version=$(get_current_version "$ARCH_PATH" 2>/dev/null || echo "none")
 
-        # Quick chroot smoke-test to distinguish "files present" from "actually works"
         if chroot "$ARCH_PATH" /bin/bash -c 'echo ok' >/dev/null 2>&1; then
             ok "Installation: Valid and executable (version: $current_version)"
         else
@@ -232,114 +215,84 @@ cmd_status() {
         fi
     else
         warn "Installation: Not found"
-        info "Run 'archdroid bootstrap' to install"
+        info "Run: archdroid up"
         return 1
     fi
 
-    # Runtime status check
-    info "Checking runtime system status..."
     local inspect_status=0
+    info "Checking runtime..."
     "${CORE_DIR}/inspect-runtime.sh" >/dev/null 2>&1 || inspect_status=$?
-    if [ "$inspect_status" -eq 0 ] || [ "$inspect_status" -eq 1 ]; then
+    if [ "$inspect_status" -le 1 ]; then
         ok "Runtime: Ready"
     else
-        warn "Runtime: Issues detected"
-        info "Run 'archdroid doctor' for detailed diagnosis"
+        warn "Runtime: Issues detected — run 'archdroid doctor'"
     fi
 
-    # Trust state
     local trust_marker="${ARCH_PATH}/.archdroid-trust-reset"
     if [ -f "$trust_marker" ]; then
-        warn "Trust: Reset required (marked as untrusted)"
-        info "Run 'archdroid reset-trust' then 'archdroid bootstrap'"
+        warn "Trust: Reset required"
+        info "Run: archdroid reset-trust && archdroid bootstrap"
     else
-        ok "Trust: Clean state"
+        ok "Trust: Clean"
     fi
 
     echo ""
-    info "System ready for 'archdroid start'"
+    info "Enter chroot: archdroid start"
 }
 
 cmd_help() {
     banner "ArchDroid Commands"
     echo ""
     echo "Quick Start:"
-    echo "  up            Bootstrap (if needed) + fix environment + enter + pacman -Syu"
+    echo "  up            Bootstrap (if needed) + fix env + enter + pacman -Syu"
     echo ""
-    echo "Setup Commands:"
-    echo "  bootstrap     Install Arch Linux rootfs with security verification"
+    echo "Setup:"
+    echo "  bootstrap     Install Arch Linux rootfs"
     echo "  update        Atomically update existing installation"
-    echo "  reset-trust   Clear all accumulated state and force fresh bootstrap"
+    echo "  reset-trust   Clear state and force fresh bootstrap"
     echo ""
-    echo "Runtime Commands:"
-    echo "  start         Enter secure chroot environment"
-    echo "  status        Show system and installation status"
+    echo "Runtime:"
+    echo "  start         Enter chroot environment"
+    echo "  status        Show installation and runtime status"
     echo ""
-    echo "Diagnostic Commands:"
-    echo "  doctor        Run comprehensive system diagnostics"
-    echo "  verify        Independent verification of installation"
-    echo "  version       Show version and configuration information"
+    echo "Diagnostics:"
+    echo "  doctor        Run comprehensive system inspection"
+    echo "  verify        Independent verification"
+    echo "  version       Show version and configuration"
     echo ""
     echo "Environment Variables:"
-    echo "  ARCH_PATH           Installation directory (default: /data/local/arch)"
-    echo "  ARCHDROID_SAFE_MODE Enable safe mode to bypass hard gates (debugging)"
-    echo ""
-    echo "Security Notes:"
-    echo "  - External checksum verification required for production"
-    echo "  - See TRUST_MODEL.md for security boundaries"
-    echo "  - Requires root access for proper mount handling"
+    echo "  ARCH_PATH            Installation path (default: /data/local/arch)"
+    echo "  ARCHDROID_FORCE=1    Allow overwriting unmanaged rootfs (requires confirmation)"
+    echo "  ARCHDROID_SAFE_MODE=1  Bypass validation gates (debugging only)"
     echo ""
     echo "Examples:"
-    echo "  archdroid up           # Full first-time setup in one command"
-    echo "  archdroid bootstrap    # Initial installation only"
-    echo "  archdroid start        # Enter chroot"
-    echo "  archdroid doctor       # Diagnose issues"
-    echo "  archdroid update       # Update to latest version"
+    echo "  archdroid up                                  # First-time full setup"
+    echo "  export ARCH_PATH=/data/local/arch-test        # Test path (safe)"
+    echo "  archdroid start                               # Enter chroot"
+    echo "  archdroid doctor                              # Diagnose issues"
 }
 
-# ─── MAIN COMMAND DISPATCHER ─────────────────────────────────────────────────
+# ─── DISPATCHER ──────────────────────────────────────────────────────────────
 main() {
-    # Validate core directory exists
     if [ ! -d "$CORE_DIR" ]; then
         fail "Core directory not found: $CORE_DIR"
         exit 1
     fi
 
-    # Parse command
     local command="${1:-help}"
     shift || true
 
     case "$command" in
-        "up")
-            cmd_up "$@"
-            ;;
-        "bootstrap"|"install")
-            cmd_bootstrap "$@"
-            ;;
-        "start"|"run"|"enter")
-            cmd_start "$@"
-            ;;
-        "update"|"upgrade")
-            cmd_update "$@"
-            ;;
-        "doctor"|"diagnose"|"check")
-            cmd_doctor "$@"
-            ;;
-        "verify"|"validate")
-            cmd_verify "$@"
-            ;;
-        "reset-trust"|"reset")
-            cmd_reset_trust "$@"
-            ;;
-        "status"|"info")
-            cmd_status "$@"
-            ;;
-        "version"|"--version"|"-v")
-            cmd_version "$@"
-            ;;
-        "help"|"--help"|"-h")
-            cmd_help "$@"
-            ;;
+        up)              cmd_up "$@" ;;
+        bootstrap|install) cmd_bootstrap "$@" ;;
+        start|run|enter) cmd_start "$@" ;;
+        update|upgrade)  cmd_update "$@" ;;
+        doctor|diagnose|check) cmd_doctor "$@" ;;
+        verify|validate) cmd_verify "$@" ;;
+        reset-trust|reset) cmd_reset_trust "$@" ;;
+        status|info)     cmd_status "$@" ;;
+        version|--version|-v) cmd_version "$@" ;;
+        help|--help|-h)  cmd_help "$@" ;;
         *)
             fail "Unknown command: $command"
             echo ""
@@ -349,7 +302,6 @@ main() {
     esac
 }
 
-# ─── MAIN EXECUTION ──────────────────────────────────────────────────────────
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     main "$@"
 fi
