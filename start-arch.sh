@@ -66,6 +66,7 @@ mkdir -p \
   "$ARCH_PATH/dev/pts" \
   "$ARCH_PATH/proc" \
   "$ARCH_PATH/sys" \
+  "$ARCH_PATH/tmp" \
   "$ARCH_PATH/media/sdcard" \
   "$ARCH_PATH/etc"
 
@@ -101,6 +102,9 @@ if [ -n "$SDCARD_SRC" ]; then
 else
   warn "No sdcard source found — skipping"
 fi
+
+# /tmp as tmpfs — RAM-backed, big performance boost for llama.cpp / AI agents
+do_mount "tmp" "$ARCH_PATH/tmp" mount -t tmpfs -o size=512m,mode=1777 tmpfs "$ARCH_PATH/tmp"
 
 # ─── 5. DNS ─────────────────────────────────────────────────────────────────
 info "Syncing DNS..."
@@ -198,5 +202,9 @@ fi
 echo ""
 info "Entering Arch chroot → ${ARCH_PATH}"
 echo ""
+
+# Force clean PATH — prevents Android /system/bin leaking into chroot
+# and causing binary conflicts with Arch's own tools
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 exec chroot "$ARCH_PATH" "$CHROOT_SHELL" -l
