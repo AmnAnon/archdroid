@@ -74,9 +74,8 @@ fi
 if ! echo "$PATH" | grep -q "/data/local/bin"; then
   warn "/data/local/bin not in your PATH — fixing automatically..."
 
-  # Detect which shell config to write to
+  # Detect which shell config to write to — create .bashrc if none exist
   SHELL_CONFIG=""
-  # Check Termux home explicitly (HOME may resolve to /root when running as su)
   TERMUX_HOME="/data/data/com.termux/files/home"
   for candidate in \
     "${TERMUX_HOME}/.bashrc" \
@@ -89,6 +88,16 @@ if ! echo "$PATH" | grep -q "/data/local/bin"; then
       break
     fi
   done
+
+  # If no config found, create .bashrc in Termux home (or $HOME as fallback)
+  if [ -z "$SHELL_CONFIG" ]; then
+    if [ -d "$TERMUX_HOME" ]; then
+      SHELL_CONFIG="${TERMUX_HOME}/.bashrc"
+    else
+      SHELL_CONFIG="${HOME}/.bashrc"
+    fi
+    touch "$SHELL_CONFIG" 2>/dev/null || true
+  fi
 
   PATH_LINE='export PATH=/data/local/bin:$PATH'
 
