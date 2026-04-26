@@ -62,11 +62,45 @@ ln -sf "$INSTALL_DIR/archdroid" "$BIN_PATH"
 chmod +x "$BIN_PATH"
 ok "CLI installed → $BIN_PATH"
 
-# Add /data/local/bin to PATH hint
+# Add /data/local/bin to PATH — write to shell config automatically
 if ! echo "$PATH" | grep -q "/data/local/bin"; then
-  warn "/data/local/bin not in your PATH"
-  info "Add to your shell config: export PATH=/data/local/bin:\$PATH"
-  info "Or run directly: $INSTALL_DIR/archdroid <command>"
+  warn "/data/local/bin not in your PATH — fixing automatically..."
+
+  # Detect which shell config to write to
+  SHELL_CONFIG=""
+  for candidate in \
+    "/data/data/com.termux/files/home/.bashrc" \
+    "/data/data/com.termux/files/home/.bash_profile" \
+    "$HOME/.bashrc" \
+    "$HOME/.bash_profile" \
+    "$HOME/.profile"; do
+    if [ -f "$candidate" ]; then
+      SHELL_CONFIG="$candidate"
+      break
+    fi
+  done
+
+  PATH_LINE='export PATH=/data/local/bin:$PATH'
+
+  if [ -n "$SHELL_CONFIG" ]; then
+    # Only add if not already present
+    if ! grep -qF '/data/local/bin' "$SHELL_CONFIG" 2>/dev/null; then
+      echo "" >> "$SHELL_CONFIG"
+      echo "# Added by ArchDroid install" >> "$SHELL_CONFIG"
+      echo "$PATH_LINE" >> "$SHELL_CONFIG"
+      ok "Added PATH to $SHELL_CONFIG"
+    else
+      ok "PATH entry already present in $SHELL_CONFIG"
+    fi
+    info "Reload with: source $SHELL_CONFIG"
+  else
+    warn "Could not detect shell config — add manually:"
+    info "  $PATH_LINE"
+  fi
+
+  # Apply to current session regardless
+  export PATH="/data/local/bin:$PATH"
+  ok "PATH updated for this session"
 fi
 
 echo ""

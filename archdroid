@@ -113,11 +113,18 @@ cmd_reset_trust() {
 cmd_status() {
     banner "ArchDroid System Status"
 
-    # Installation status
+    # Installation status — check both presence and chroot validity
     if [ -f "$ARCH_PATH/bin/bash" ]; then
         local current_version
-        current_version=$(get_current_version "/data/local/archdroid-state" 2>/dev/null || echo "unknown")
-        ok "Installation: Present (version: $current_version)"
+        current_version=$(get_current_version "/data/local/archdroid-state" 2>/dev/null || echo "none")
+
+        # Quick chroot smoke-test to distinguish "files present" from "actually works"
+        if chroot "$ARCH_PATH" /bin/bash -c 'echo ok' >/dev/null 2>&1; then
+            ok "Installation: Valid and executable (version: $current_version)"
+        else
+            warn "Installation: Files present but chroot test failed (version: $current_version)"
+            info "Run 'archdroid doctor' — SELinux is a common cause"
+        fi
     else
         warn "Installation: Not found"
         info "Run 'archdroid bootstrap' to install"
@@ -126,8 +133,10 @@ cmd_status() {
 
     # Runtime status check
     info "Checking runtime system status..."
-    if "${CORE_DIR}/inspect-runtime.sh" >/dev/null 2>&1; then
-        ok "Runtime: Ready (all checks passed)"
+    local inspect_status=0
+    "${CORE_DIR}/inspect-runtime.sh" >/dev/null 2>&1 || inspect_status=$?
+    if [ "$inspect_status" -eq 0 ] || [ "$inspect_status" -eq 1 ]; then
+        ok "Runtime: Ready"
     else
         warn "Runtime: Issues detected"
         info "Run 'archdroid doctor' for detailed diagnosis"

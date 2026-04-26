@@ -59,21 +59,126 @@ update_component_status() {
     fi
 }
 
-# ─── AUTO-FIX FUNCTIONS ──────────────────────────────────────────────────────
+# ─── CHROOT FAILURE DIAGNOSIS ────────────────────────────────────────────────
+diagnose_chroot_failure() {
+    echo ""
+    echo "  ═══ Chroot Failure Analysis ═══"
+    echo ""
+
+    # 1. SELinux detection — offer to fix with user approval
+    if command -v getenforce >/dev/null 2>&1; then
+        local selinux_mode
+        selinux_mode=$(getenforce 2>/dev/null || echo "unknown")
+        info "SELinux mode: $selinux_mode"
+
+        if [ "$selinux_mode" = "Enforcing" ]; then
+            warn "SELinux is Enforcing — this is the most likely cause"
+            echo ""
+            echo "  SELinux prevents chroot execution in Enforcing mode."
+            echo "  Setting it to Permissive is safe and temporary (resets on reboot)."
+            echo ""
+
+            # Ask for approval before touching SELinux
+            if [ -t 0 ]; then
+                printf "  Apply fix now? (setenforce 0) [y/N]: "
+                read -r selinux_answer </dev/tty
+                if [ "$selinux_answer" = "y" ] || [ "$selinux_answer" = "Y" ]; then
+                    if setenforce 0 2>/dev/null; then
+                        ok "SELinux set to Permissive — re-run archdroid start"
+                    else
+                        warn "setenforce 0 failed — are you root?"
+                    fi
+                else
+                    info "Skipped. To apply manually:"
+                    echo "     setenforce 0"
+                fi
+            else
+                # Non-interactive (piped/scripted): just show the command
+                warn "Run manually to fix:"
+                echo "     setenforce 0"
+            fi
+        elif [ "$selinux_mode" = "Permissive" ] || [ "$selinux_mode" = "Disabled" ]; then
+            ok "SELinux: $selinux_mode — not the cause"
+        fi
+    fi
+
+    echo ""
+
+    # 2. Library check — try to identify missing ELF deps
+    local bash_bin="$ARCH_PATH/bin/bash"
+    if [ -f "$bash_bin" ]; then
+        info "Checking /bin/bash binary..."
+        local interp
+        interp=$(readelf -l "$bash_bin" 2>/dev/null | awk '/interpreter/ {gsub(/[\[\]]/,""); print $NF}')
+        if [ -n "$interp" ]; then
+            local interp_in_rootfs="$ARCH_PATH$interp"
+            if [ ! -f "$interp_in_rootfs" ]; then
+                fail "ELF interpreter missing inside rootfs: $interp"
+                echo "     This means /bin/bash cannot execute — rootfs may be incomplete"
+            else
+                ok "ELF interpreter present: $interp"
+            fi
+        fi
+    fi
+
+    echo ""
+
+    # 3. Actionable next steps
+    info "Suggested fixes (in order):"
+    echo ""
+    echo "    1. Fix SELinux (temporary, resets on reboot):"
+    echo "       setenforce 0 && archdroid start"
+    echo ""
+    echo "    2. Bypass validation and enter anyway:"
+    echo "       ARCHDROID_SAFE_MODE=1 archdroid start"
+    echo ""
+    echo "    3. Manual chroot test to see the real error:"
+    echo "       chroot $ARCH_PATH /bin/bash -c 'echo ok'"
+    echo ""
+    echo "    4. If rootfs is genuinely broken:"
+    echo "       export ARCH_PATH=/data/local/arch-test"
+    echo "       archdroid bootstrap"
+}
+
+# ─── SELINUX WITH APPROVAL ───────────────────────────────────────────────────
 autofix_selinux() {
     if [ "$AUTO_FIX" != "1" ]; then
         return 1
     fi
 
-    autofix "Setting SELinux to permissive for chroot compatibility..."
-    if setenforce 0 2>/dev/null; then
-        ok "SELinux set to permissive"
-        return 0
+    local selinux_mode
+    selinux_mode=$(getenforce 2>/dev/null || echo "unknown")
+
+    if [ "$selinux_mode" != "Enforcing" ]; then
+        return 0  # Nothing to do
+    fi
+
+    warn "SELinux is Enforcing — chroot operations may be blocked"
+    echo ""
+
+    if [ -t 0 ]; then
+        printf "  Set SELinux to Permissive temporarily? (resets on reboot) [y/N]: "
+        read -r answer </dev/tty
+        if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
+            if setenforce 0 2>/dev/null; then
+                ok "SELinux set to Permissive"
+                return 0
+            else
+                warn "setenforce 0 failed (need root)"
+                return 1
+            fi
+        else
+            info "SELinux left as-is — some operations may fail"
+            return 1
+        fi
     else
-        warn "Failed to set SELinux permissive (may need root)"
+        warn "Non-interactive mode — skipping SELinux change"
+        warn "Run manually: setenforce 0"
         return 1
     fi
 }
+
+
 
 autofix_tmp_mount() {
     if [ "$AUTO_FIX" != "1" ]; then
@@ -170,23 +275,26 @@ validate_rootfs() {
     check_essential_file "usr/bin/pacman" "Pacman package manager" 1 || \
         warn "Pacman not found (not an Arch system?)"
 
-    # Improved chroot test with multiple fallbacks
+    # Chroot execution test — args must be passed as separate words, not a
+    # single quoted string, so each attempt is its own explicit call.
     info "Testing chroot execution..."
     local chroot_working=false
 
-    # Try different shells and commands
-    for shell_cmd in "/bin/bash -c 'echo ok'" "/bin/sh -c 'echo ok'" "/bin/bash --version" "/bin/sh"; do
-        if chroot "$ARCH_PATH" $shell_cmd >/dev/null 2>&1; then
-            chroot_working=true
-            break
-        fi
-    done
+    if chroot "$ARCH_PATH" /bin/bash -c 'echo ok' >/dev/null 2>&1; then
+        chroot_working=true
+    elif chroot "$ARCH_PATH" /bin/sh -c 'echo ok' >/dev/null 2>&1; then
+        chroot_working=true
+    elif chroot "$ARCH_PATH" /usr/bin/env true >/dev/null 2>&1; then
+        chroot_working=true
+    elif chroot "$ARCH_PATH" /bin/bash --version >/dev/null 2>&1; then
+        chroot_working=true
+    fi
 
     if [ "$chroot_working" = true ]; then
         ok "Chroot execution test: PASSED"
     else
         fail "Chroot execution test: FAILED"
-        warn "This may be due to SELinux or missing libraries"
+        diagnose_chroot_failure
         update_component_status "filesystem" $STATUS_FAIL
         return 1
     fi
@@ -377,11 +485,7 @@ validate_security() {
         case "$selinux_status" in
             "Enforcing")
                 warn "SELinux: Enforcing (may block chroot operations)"
-                if autofix_selinux; then
-                    ok "SELinux: Set to permissive for chroot compatibility"
-                else
-                    update_component_status "security" $STATUS_WARN
-                fi
+                autofix_selinux || update_component_status "security" $STATUS_WARN
                 ;;
             "Permissive")
                 ok "SELinux: Permissive (compatible)"

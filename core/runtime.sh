@@ -22,6 +22,74 @@ LOG_FILE="${STATE_DIR}/logs/runtime-${SESSION_ID}.log"
 # Load utilities
 source "${SCRIPT_DIR}/json-utils.sh"
 
+# ─── CHROOT FAILURE DIAGNOSIS ────────────────────────────────────────────────
+diagnose_chroot_failure() {
+    echo ""
+    echo "  ═══ Chroot Failure Analysis ═══"
+    echo ""
+
+    # SELinux detection with user-approval fix
+    if command -v getenforce >/dev/null 2>&1; then
+        local selinux_mode
+        selinux_mode=$(getenforce 2>/dev/null || echo "unknown")
+        info "SELinux mode: $selinux_mode"
+
+        if [ "$selinux_mode" = "Enforcing" ]; then
+            warn "SELinux is Enforcing — most likely cause of chroot failure"
+            echo ""
+            echo "  Setting to Permissive is safe and temporary (resets on reboot)."
+            echo ""
+            if [ -t 0 ]; then
+                printf "  Apply fix now? (setenforce 0) [y/N]: "
+                read -r selinux_answer </dev/tty
+                if [ "$selinux_answer" = "y" ] || [ "$selinux_answer" = "Y" ]; then
+                    if setenforce 0 2>/dev/null; then
+                        ok "SELinux set to Permissive — re-run: archdroid start"
+                    else
+                        warn "setenforce 0 failed — are you root?"
+                    fi
+                else
+                    info "Skipped. To apply manually:  setenforce 0"
+                fi
+            else
+                warn "Run manually to fix:  setenforce 0"
+            fi
+        else
+            ok "SELinux: $selinux_mode — not the cause"
+        fi
+    fi
+
+    echo ""
+
+    # ELF interpreter check
+    local bash_bin="$ARCH_PATH/bin/bash"
+    if [ -f "$bash_bin" ]; then
+        local interp
+        interp=$(readelf -l "$bash_bin" 2>/dev/null | awk '/interpreter/ {gsub(/[\[\]]/,""); print $NF}')
+        if [ -n "$interp" ] && [ ! -f "$ARCH_PATH$interp" ]; then
+            fail "ELF interpreter missing inside rootfs: $interp"
+            echo "     Rootfs may be incomplete — re-run: archdroid bootstrap"
+        fi
+    fi
+
+    echo ""
+    info "Next steps (in order):"
+    echo ""
+    echo "    1. Fix SELinux (temporary, resets on reboot):"
+    echo "       setenforce 0 && archdroid start"
+    echo ""
+    echo "    2. Bypass validation (for debugging only):"
+    echo "       ARCHDROID_SAFE_MODE=1 archdroid start"
+    echo ""
+    echo "    3. Test manually to see the real error message:"
+    echo "       chroot $ARCH_PATH /bin/bash -c 'echo ok'"
+    echo ""
+    echo "    4. If rootfs is broken — fresh install to a test path:"
+    echo "       export ARCH_PATH=/data/local/arch-test"
+    echo "       archdroid bootstrap"
+    echo ""
+}
+
 # ─── TAMPER-AWARE LOGGING ────────────────────────────────────────────────────
 add_log_integrity() {
     local log_file="$1"
@@ -120,11 +188,21 @@ adaptive_gate_startup() {
             env_status=$(safe_json_int "$RUNTIME_JSON" ".components.environment" "2")
             sec_status=$(safe_json_int "$RUNTIME_JSON" ".components.security" "2")
 
-            # Filesystem is critical - can't proceed without it
+            # Filesystem is critical — can't proceed without it
             if [ "$fs_status" -gt 1 ]; then
-                fail "Critical filesystem issues detected"
-                fail "Cannot start - rootfs not properly installed"
-                echo "FATAL: Filesystem validation failed - rootfs issues" >> "$LOG_FILE"
+                fail "Chroot execution failed — rootfs cannot execute"
+                echo ""
+                # Source the diagnose function from inspect-runtime if available
+                if declare -f diagnose_chroot_failure >/dev/null 2>&1; then
+                    diagnose_chroot_failure
+                else
+                    fail "Run 'archdroid doctor' for a full diagnosis"
+                    echo ""
+                    echo "  Quick fixes:"
+                    echo "    setenforce 0 && archdroid start"
+                    echo "    ARCHDROID_SAFE_MODE=1 archdroid start"
+                fi
+                echo "FATAL: Filesystem validation failed - chroot not working" >> "$LOG_FILE"
                 exit 2
             fi
 
