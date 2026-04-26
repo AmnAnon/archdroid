@@ -8,8 +8,25 @@
 set -euo pipefail
 
 # ─── CONFIGURATION ───────────────────────────────────────────────────────────
-# Resolve actual script location even when symlinked
-SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+# Robust script location resolution that handles symlinks properly
+if command -v realpath >/dev/null 2>&1; then
+    # Use realpath if available (most modern systems)
+    SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
+else
+    # Fallback for systems without realpath
+    SCRIPT_PATH="${BASH_SOURCE[0]}"
+    # Follow symlinks manually
+    while [ -L "$SCRIPT_PATH" ]; do
+        local link_target
+        link_target="$(readlink "$SCRIPT_PATH")"
+        if [[ "$link_target" == /* ]]; then
+            SCRIPT_PATH="$link_target"
+        else
+            SCRIPT_PATH="$(dirname "$SCRIPT_PATH")/$link_target"
+        fi
+    done
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 CORE_DIR="$SCRIPT_DIR/core"
 
