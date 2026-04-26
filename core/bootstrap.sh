@@ -625,7 +625,7 @@ bootstrap_cleanup() {
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     # Guard: must be invoked via the archdroid CLI, not directly.
-    if [ "${ARCHDROID_BOOTSTRAP_ALLOWED:-0}" != "1" ]; then
+    if [ "${ARCHDROID_BOOTSTRAP_ALLOWED:-0}" != "1" ] || [ "${ARCHDROID_INTERNAL_CALL:-0}" != "1" ]; then
         echo -e "\033[0;31m  ✘  Do not run bootstrap.sh directly.\033[0m"
         echo -e "\033[0;36m  ▶  Use: archdroid bootstrap\033[0m"
         exit 1

@@ -73,7 +73,7 @@ cmd_up() {
     if [ ! -f "$ARCH_PATH/bin/bash" ]; then
         info "No rootfs found — running bootstrap first..."
         echo ""
-        ARCHDROID_BOOTSTRAP_ALLOWED=1 "${CORE_DIR}/bootstrap.sh" || {
+        ARCHDROID_BOOTSTRAP_ALLOWED=1 ARCHDROID_INTERNAL_CALL=1 "${CORE_DIR}/bootstrap.sh" || {
             fail "Bootstrap failed — run 'archdroid doctor' for details"
             exit 1
         }
@@ -167,7 +167,7 @@ cmd_up() {
 cmd_bootstrap() {
     banner "ArchDroid Bootstrap"
     info "Starting secure bootstrap process..."
-    ARCHDROID_BOOTSTRAP_ALLOWED=1 exec "${CORE_DIR}/bootstrap.sh" "$@"
+    ARCHDROID_BOOTSTRAP_ALLOWED=1 ARCHDROID_INTERNAL_CALL=1 exec "${CORE_DIR}/bootstrap.sh" "$@"
 }
 
 cmd_start() {
