@@ -36,7 +36,7 @@ write_version_lock() {
         echo "# ArchDroid Version Lock"
         echo "install_timestamp=$timestamp"
         echo "install_method=bootstrap"
-        echo "rootfs_md5=$md5_hash"
+        echo "rootfs_sha256=$md5_hash"
         echo "system_verified=true"
     } > "$version_file"
 }

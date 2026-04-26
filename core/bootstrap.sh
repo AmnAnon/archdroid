@@ -171,29 +171,28 @@ download_rootfs() {
     ok "Downloaded rootfs successfully"
     echo "SUCCESS: Rootfs downloaded" >> "$BOOTSTRAP_LOG"
 
-    # Download MD5 checksum file
-    local md5_file="${tarfile}.md5"
-    info "Downloading MD5 checksum..."
+    # Download SHA256 checksum file
+    local sha256_file="${tarfile}.sha256"
+    info "Downloading SHA256 checksum..."
     if ! "$curl_bin" -L --fail --retry 3 --connect-timeout 10 --max-time 30 \
-        -o "$md5_file" "${ARCH_URL_PRIMARY}.md5" 2>&1; then
-        fail "Failed to download MD5 checksum file"
-        echo "FATAL: MD5 download failed" >> "$BOOTSTRAP_LOG"
+        -o "$sha256_file" "${ARCH_URL_PRIMARY}.sha256" 2>&1; then
+        fail "Failed to download SHA256 checksum file"
+        echo "FATAL: SHA256 download failed" >> "$BOOTSTRAP_LOG"
         return 1
     fi
 
-    ok "Downloaded MD5 checksum"
-    echo "SUCCESS: MD5 checksum downloaded" >> "$BOOTSTRAP_LOG"
+    ok "Downloaded SHA256 checksum"
+    echo "SUCCESS: SHA256 checksum downloaded" >> "$BOOTSTRAP_LOG"
     return 0
 }
 
 # ─── INTEGRITY VERIFICATION ──────────────────────────────────────────────────
 verify_download() {
     local tarfile="$1"
-    local md5_file="${tarfile}.md5"
+    local sha256_file="${tarfile}.sha256"
 
     info "Verifying download integrity..."
 
-    # Basic file validation
     if [ ! -f "$tarfile" ]; then
         fail "Downloaded file does not exist: $tarfile"
         echo "FATAL: File not found: $tarfile" >> "$BOOTSTRAP_LOG"
@@ -206,9 +205,9 @@ verify_download() {
         return 1
     fi
 
-    if [ ! -f "$md5_file" ]; then
-        fail "MD5 checksum file not found: $md5_file"
-        echo "FATAL: MD5 file not found: $md5_file" >> "$BOOTSTRAP_LOG"
+    if [ ! -f "$sha256_file" ]; then
+        fail "SHA256 checksum file not found: $sha256_file"
+        echo "FATAL: SHA256 file not found: $sha256_file" >> "$BOOTSTRAP_LOG"
         return 1
     fi
 
@@ -217,28 +216,26 @@ verify_download() {
     ok "File size: $(numfmt --to=iec "$filesize")"
     echo "INFO: File size: $filesize bytes" >> "$BOOTSTRAP_LOG"
 
-    # MD5 verification
-    info "Verifying MD5 checksum..."
+    # SHA256 verification
+    info "Verifying SHA256 checksum..."
     local download_dir
     download_dir=$(dirname "$tarfile")
 
-    if (cd "$download_dir" && md5sum -c "$(basename "$md5_file")" 2>/dev/null); then
-        ok "MD5 verification: PASSED"
-        echo "SUCCESS: MD5 checksum verified" >> "$BOOTSTRAP_LOG"
+    if (cd "$download_dir" && sha256sum -c "$(basename "$sha256_file")" 2>/dev/null); then
+        ok "SHA256 verification: PASSED"
+        echo "SUCCESS: SHA256 checksum verified" >> "$BOOTSTRAP_LOG"
 
-        # Extract MD5 hash for version lock
-        local md5_hash
-        md5_hash=$(awk '{print $1}' "$md5_file")
-        echo "MD5_HASH: $md5_hash" >> "$BOOTSTRAP_LOG"
+        local sha256_hash
+        sha256_hash=$(awk '{print $1}' "$sha256_file")
+        echo "SHA256_HASH: $sha256_hash" >> "$BOOTSTRAP_LOG"
 
         return 0
     else
-        fail "MD5 verification: FAILED"
+        fail "SHA256 verification: FAILED"
         fail "This indicates corrupted download or network tampering"
-        echo "FATAL: MD5 verification failed" >> "$BOOTSTRAP_LOG"
+        echo "FATAL: SHA256 verification failed" >> "$BOOTSTRAP_LOG"
 
-        # Cleanup failed files
-        rm -f "$tarfile" "$md5_file"
+        rm -f "$tarfile" "$sha256_file"
         echo "CLEANUP: Removed corrupted files" >> "$BOOTSTRAP_LOG"
         return 1
     fi
@@ -293,42 +290,57 @@ extract_to_staging() {
 }
 
 # ─── ROOTFS VALIDATION ───────────────────────────────────────────────────────
+mount_staging() {
+    local staging_dir="$1"
+    mkdir -p "$staging_dir/proc" "$staging_dir/sys" "$staging_dir/dev"
+    mount -t proc  proc  "$staging_dir/proc" 2>/dev/null || true
+    mount -t sysfs sysfs "$staging_dir/sys"  2>/dev/null || true
+    mount --rbind  /dev  "$staging_dir/dev"  2>/dev/null || true
+    mount --make-rslave  "$staging_dir/dev"  2>/dev/null || true
+}
+
+umount_staging() {
+    local staging_dir="$1"
+    umount -lf "$staging_dir/dev" 2>/dev/null || true
+    umount -lf "$staging_dir/sys" 2>/dev/null || true
+    umount -lf "$staging_dir/proc" 2>/dev/null || true
+}
+
 validate_staging_rootfs() {
     local staging_dir="$1"
 
     info "Validating staged rootfs using inspection system..."
     echo "VALIDATE: Starting rootfs validation" >> "$BOOTSTRAP_LOG"
 
-    # Use our own inspection system to validate the staged rootfs
+    # Mount essential filesystems so the chroot test can actually execute
+    mount_staging "$staging_dir"
+    # Guarantee unmount even if validation fails or script is interrupted
+    trap "umount_staging '$staging_dir'" RETURN
+
     local temp_json="${STATE_DIR}/staging-validation.json"
+    local inspect_exit=0
+    ARCH_PATH="$staging_dir" ARCHDROID_AUTO_FIX=0 \
+        "${SCRIPT_DIR}/inspect-runtime.sh" >/dev/null 2>&1 || inspect_exit=$?
 
-    if ARCH_PATH="$staging_dir" "${SCRIPT_DIR}/inspect-runtime.sh" >/dev/null 2>&1; then
-        local status
-        status=$(safe_json_int "$temp_json" ".overall_status" "2")
-
-        case "$status" in
-            0)
-                ok "Staged rootfs validation: PASSED (no issues)"
-                echo "SUCCESS: Rootfs validation passed" >> "$BOOTSTRAP_LOG"
-                ;;
-            1)
-                warn "Staged rootfs validation: WARNINGS (acceptable)"
-                echo "WARN: Rootfs has warnings but acceptable" >> "$BOOTSTRAP_LOG"
-                ;;
-            *)
-                fail "Staged rootfs validation: FAILED (critical issues)"
-                echo "FATAL: Rootfs validation failed" >> "$BOOTSTRAP_LOG"
-                return 1
-                ;;
-        esac
-    else
-        fail "Rootfs validation inspection failed"
-        echo "FATAL: Inspection system failed" >> "$BOOTSTRAP_LOG"
-        return 1
-    fi
-
-    # Clean up temp validation file
+    local status
+    status=$(safe_json_int "$temp_json" ".overall_status" "2")
     rm -f "$temp_json"
+
+    case "$status" in
+        0)
+            ok "Staged rootfs validation: PASSED"
+            echo "SUCCESS: Rootfs validation passed" >> "$BOOTSTRAP_LOG"
+            ;;
+        1)
+            warn "Staged rootfs validation: WARNINGS (acceptable)"
+            echo "WARN: Rootfs has warnings but acceptable" >> "$BOOTSTRAP_LOG"
+            ;;
+        *)
+            fail "Staged rootfs validation: FAILED"
+            echo "FATAL: Rootfs validation failed (inspect exit: $inspect_exit)" >> "$BOOTSTRAP_LOG"
+            return 1
+            ;;
+    esac
     return 0
 }
 
@@ -389,16 +401,15 @@ atomic_install() {
     if [ -f "$target_dir/bin/bash" ] && [ -f "$target_dir/etc/pacman.conf" ]; then
         ok "Installation verification: PASSED"
 
-        # Extract MD5 hash from download for version lock
-        local md5_file="${tarfile}.md5"
-        local md5_hash="unknown"
-        if [ -f "$md5_file" ]; then
-            md5_hash=$(awk '{print $1}' "$md5_file" 2>/dev/null || echo "unknown")
+        # Extract SHA256 hash for version lock
+        local sha256_file="${tarfile}.sha256"
+        local sha256_hash="unknown"
+        if [ -f "$sha256_file" ]; then
+            sha256_hash=$(awk '{print $1}' "$sha256_file" 2>/dev/null || echo "unknown")
         fi
 
-        # Write version lock file
-        write_version_lock "$target_dir" "$md5_hash"
-        ok "Version lock written with MD5: $md5_hash"
+        write_version_lock "$target_dir" "$sha256_hash"
+        ok "Version lock written with SHA256: $sha256_hash"
         echo "SUCCESS: Installation verified and version lock written" >> "$BOOTSTRAP_LOG"
 
         # Clean up backup only after successful verification
@@ -610,7 +621,7 @@ bootstrap_cleanup() {
         if [ -n "${STATE_DIR:-}" ] && [ -d "$STATE_DIR" ]; then
             find "$STATE_DIR" -name "ArchLinuxARM-*.tar.gz" -type f | while read -r tarfile; do
                 rm -f "$tarfile" 2>/dev/null || true
-                rm -f "${tarfile}.md5" 2>/dev/null || true
+                rm -f "${tarfile}.sha256" 2>/dev/null || true
             done
         fi
 
