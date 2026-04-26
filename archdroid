@@ -132,6 +132,23 @@ cmd_up() {
         fi
     fi
 
+    # ── Step 2b: noexec on /data ─────────────────────────────────────────────
+    # Android mounts /data with noexec — the kernel silently refuses to execute
+    # any ELF binary from it, showing "No such file or directory" even when the
+    # file exists. Remount exec so chroot can run binaries.
+    local data_mount
+    data_mount=$(mount 2>/dev/null | awk '$3 == "/data" {print}' | head -1)
+    if echo "$data_mount" | grep -q "noexec"; then
+        warn "/data mounted noexec → remounting exec (temporary, resets on reboot)"
+        if mount -o remount,exec /data 2>/dev/null; then
+            ok "/data → exec"
+        else
+            warn "remount exec failed — chroot may not work"
+        fi
+    else
+        ok "/data: exec flag OK"
+    fi
+
     # ── Step 3: Mounts ───────────────────────────────────────────────────────
     info "Setting up mount points..."
     local d

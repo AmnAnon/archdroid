@@ -344,7 +344,14 @@ validate_staging_rootfs() {
     done
     ok "Staged rootfs: all critical paths present"
 
-    # 2. Chroot execution test — mount essentials first so bash can actually run
+    # 2. Chroot execution test — mount essentials first so bash can actually run.
+    #    Also ensure /data is not mounted noexec (Android default).
+    local data_mount
+    data_mount=$(mount 2>/dev/null | awk '$3 == "/data" {print}' | head -1)
+    if echo "$data_mount" | grep -q "noexec"; then
+        mount -o remount,exec /data 2>/dev/null || true
+    fi
+
     mount_staging "$staging_dir"
     trap "umount_staging '$staging_dir'" RETURN
 

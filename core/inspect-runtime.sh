@@ -296,6 +296,13 @@ validate_rootfs() {
     info "Testing chroot execution..."
     local chroot_working=false
 
+    # Android mounts /data noexec — remount exec so ELF binaries can run
+    local data_mount
+    data_mount=$(mount 2>/dev/null | awk '$3 == "/data" {print}' | head -1)
+    if echo "$data_mount" | grep -q "noexec"; then
+        mount -o remount,exec /data 2>/dev/null || true
+    fi
+
     # Ensure required mount dirs exist
     mkdir -p "$ARCH_PATH/proc" "$ARCH_PATH/sys" "$ARCH_PATH/dev"
 
