@@ -624,16 +624,12 @@ bootstrap_cleanup() {
 }
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-    # Guard: bootstrap.sh must only be invoked by archdroid bootstrap or archdroid up.
-    # Check the parent process to catch accidental direct invocations or dispatcher bugs.
-    parent_cmd=$(ps -o args= -p "$PPID" 2>/dev/null | awk '{print $NF}' || true)
-    if [[ "$parent_cmd" != *"archdroid"* ]] && [ "${ARCHDROID_BOOTSTRAP_ALLOWED:-0}" != "1" ]; then
-        # Not invoked via the CLI — but allow direct calls for development/testing
-        # by setting ARCHDROID_BOOTSTRAP_ALLOWED=1. Default: warn only, don't block.
-        warn "bootstrap.sh invoked directly (not via archdroid CLI)"
-        warn "This is only safe if you intended it. Use 'archdroid bootstrap' normally."
+    # Guard: must be invoked via the archdroid CLI, not directly.
+    if [ "${ARCHDROID_BOOTSTRAP_ALLOWED:-0}" != "1" ]; then
+        echo -e "\033[0;31m  ✘  Do not run bootstrap.sh directly.\033[0m"
+        echo -e "\033[0;36m  ▶  Use: archdroid bootstrap\033[0m"
+        exit 1
     fi
-    # Set up cleanup on exit
     trap bootstrap_cleanup EXIT
     run_bootstrap "$@"
 fi
