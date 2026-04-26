@@ -1,22 +1,54 @@
 # ArchDroid
 
-**Deterministic, Secure Arch Linux Runtime for Android**
+**Deterministic Arch Linux Runtime for Android (Root Required)**
 
-A production-grade system that provides deterministic enforcement, secure bootstrap with cryptographic verification, and atomic updates with guaranteed rollback for Arch Linux on rooted Android devices.
+Run Arch Linux on Android with **predictable behavior, verified installs, and safe updates** — no broken chroot states, no silent failures, no manual debugging loops.
 
 ---
 
-## 🚀 Overview
+## 🚀 Why ArchDroid?
 
-ArchDroid is a comprehensive runtime system engineered for reliability, security, and operational excellence. Unlike traditional chroot setups that adapt to environment inconsistencies, ArchDroid **defines its own truth** and enforces correctness through deterministic validation and remediation.
+Most Arch-on-Android setups fail in practice:
 
-The system addresses critical gaps in existing solutions:
-- **Inconsistent Runtime States**: Environment contamination from Android/Termux
-- **Unreliable Installation**: Partial downloads, corrupted extracts, incomplete setups  
-- **No Validation Framework**: Silent failures and configuration drift
-- **Unsafe Updates**: No rollback, no integrity verification, no atomic operations
+- environment gets polluted by Android/Termux  
+- installs break halfway with no recovery  
+- updates corrupt the system with no rollback  
+- failures are silent and hard to debug  
 
-ArchDroid provides enterprise-grade reliability through systematic validation, enforcement, and verification at every operational phase.
+**ArchDroid solves this by enforcing correctness instead of adapting to problems.**
+
+- validates system state before execution  
+- forces a clean, controlled runtime environment  
+- installs and updates atomically (no partial states)  
+- detects and recovers from failures automatically  
+
+---
+
+## ⚡ Quick Start
+
+```bash
+git clone https://github.com/AmnAnon/archdroid.git
+cd archdroid
+
+su
+./archdroid bootstrap
+./archdroid start
+```
+
+👉 If bootstrap succeeds, your system is guaranteed to be in a valid state.
+
+---
+
+## 🧠 How It Works (Simplified)
+
+ArchDroid operates in a strict loop:
+
+1. **Inspect** — validate system state  
+2. **Enforce** — fix or block invalid conditions  
+3. **Execute** — run in a clean, controlled environment  
+4. **Verify** — confirm system integrity  
+
+This ensures the system is never left in an unknown or partially broken state.
 
 ---
 
@@ -25,7 +57,7 @@ ArchDroid provides enterprise-grade reliability through systematic validation, e
 - **🎯 Deterministic Runtime**: Forces reality to match expected state, never adapts to broken environments
 - **🔐 Secure Bootstrap**: Cryptographically verified downloads with checksum validation and external trust anchors
 - **⚡ Atomic Updates**: Safe in-place updates with user data preservation and guaranteed rollback capability
-- **🛡️ Adversarial-Tested Resilience**: Battle-tested against process kills, file corruption, resource exhaustion, and network failures
+- **🛡️ Tested Against Failures**: Validated against process kills, file corruption, resource exhaustion, and network failures
 - **🔍 Comprehensive Validation**: Full system inspection (`doctor`), independent verification (`verify`), and real-time status monitoring
 - **🧰 Complete CLI Interface**: Unified command-line tool for all operations with clear workflows
 - **📊 Trust Model Documentation**: Explicit security boundaries and protection scope
@@ -81,6 +113,8 @@ ArchDroid implements a **5-phase system lifecycle** designed for operational rel
 ---
 
 ## 🔐 Security Model
+
+ArchDroid is designed to protect against **runtime inconsistency and supply-chain risks**, not full system compromise.
 
 ### ✅ Protected Against
 
@@ -192,9 +226,9 @@ The system provides **guaranteed recovery** from all failure scenarios:
 
 ## 🧪 Reliability & Testing
 
-ArchDroid has been **fuzz tested** and **stress tested** against comprehensive failure scenarios:
+ArchDroid has been **tested under failure conditions** including process interruption, corrupted inputs, and resource exhaustion. In all tested cases, it either completed successfully or recovered to a known-good state.
 
-### Adversarial Testing Coverage
+### Testing Coverage
 - **Process Termination**: Random kills during all phases of operation
 - **File Corruption**: Header corruption, truncation, random byte injection
 - **Resource Exhaustion**: Disk space filling, mount point blocking, network timeouts
@@ -205,8 +239,6 @@ ArchDroid has been **fuzz tested** and **stress tested** against comprehensive f
 - **9/9 Fuzz Tests Passed**: All failure injection scenarios handled correctly  
 - **5/5 Recovery Tests Passed**: Complete state recovery validation
 - **Zero Data Loss**: No partial artifacts or corrupted states in any failure mode
-
-**System Proven**: Robust against real-world chaos with guaranteed recovery to known-good state.
 
 ---
 
@@ -273,7 +305,7 @@ ArchDroid is built on core engineering principles:
 ### Operational Excellence
 - **Atomic operations** with guaranteed rollback capabilities
 - **Comprehensive diagnostics** with actionable error messages and recovery guidance  
-- **Battle-tested reliability** through systematic stress testing and failure injection
+- **Tested reliability** through systematic failure injection and validation
 
 ---
 
