@@ -338,14 +338,15 @@ validate_staging_rootfs() {
     # Guarantee unmount even if validation fails or script is interrupted
     trap "umount_staging '$staging_dir'" RETURN
 
-    local temp_json="${STATE_DIR}/staging-validation.json"
+    # inspect-runtime.sh writes its JSON to $STATE_DIR/runtime-snapshot.json
+    local inspect_json="${STATE_DIR}/runtime-snapshot.json"
     local inspect_exit=0
     ARCH_PATH="$staging_dir" ARCHDROID_AUTO_FIX=0 \
         "${SCRIPT_DIR}/inspect-runtime.sh" >/dev/null 2>&1 || inspect_exit=$?
 
     local status
-    status=$(safe_json_int "$temp_json" ".overall_status" "2")
-    rm -f "$temp_json"
+    status=$(safe_json_int "$inspect_json" ".overall_status" "2")
+    rm -f "$inspect_json"
 
     case "$status" in
         0)
