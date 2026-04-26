@@ -81,22 +81,6 @@ archdroid/
 
 ---
 
-## What Makes This Different
-
-| Feature | Most repos | ArchDroid |
-|---|---|---|
-| Single-command entry | ❌ | ✅ `archdroid start` |
-| DNS auto-sync with fallback | ❌ | ✅ 3-strategy fallback |
-| KernelSU + Magisk support | Partial | ✅ Auto-detected |
-| RAM-backed `/tmp` | ❌ | ✅ 512MB tmpfs |
-| Clean PATH (no Android leak) | ❌ | ✅ |
-| Self-healing | ❌ | ✅ `archdroid doctor` |
-| Logging | ❌ | ✅ Daily logs |
-| kernel 4.x pacman fix | ❌ | ✅ Auto-patched |
-| Safe unmount | ❌ | ✅ `archdroid stop` |
-
----
-
 ## Troubleshooting
 
 Run `archdroid doctor` first — it checks and auto-fixes most common issues.
@@ -132,4 +116,4 @@ MIT — use freely, credit appreciated.
 
 ---
 
-*by [AkN_Logic](https://x.com/AkN_Logic) — The Modern Alchemist in the Shell*
+*by AkN*
