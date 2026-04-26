@@ -1,7 +1,7 @@
 #!/bin/bash
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║  ArchDroid — install.sh                                         ║
-# ║  Clones repo, installs CLI, ready to run archdroid init         ║
+# ║  Clones repo and sets up the archdroid CLI                      ║
 # ╚══════════════════════════════════════════════════════════════════╝
 # Usage:
 #   su
@@ -23,7 +23,7 @@ BIN_PATH="/data/local/bin/archdroid"
 
 echo -e "${BOLD}${CYAN}"
 echo "  ╔══════════════════════════════════════════════════╗"
-echo "  ║  ArchDroid — Managed Arch Linux for Android      ║"
+echo "  ║  ArchDroid — Deterministic Arch Linux Runtime    ║"
 echo "  ║  github.com/AmnAnon/archdroid                    ║"
 echo "  ╚══════════════════════════════════════════════════╝"
 echo -e "${RESET}"
@@ -52,13 +52,13 @@ else
 fi
 
 # Make everything executable
-chmod +x "$INSTALL_DIR/cli/archdroid"
+chmod +x "$INSTALL_DIR/archdroid"
 chmod +x "$INSTALL_DIR/core/"*.sh
-chmod +x "$INSTALL_DIR/install.sh"
+chmod +x "$INSTALL_DIR/test/"*.sh 2>/dev/null || true
 
 # Install CLI to PATH
 mkdir -p /data/local/bin
-ln -sf "$INSTALL_DIR/cli/archdroid" "$BIN_PATH"
+ln -sf "$INSTALL_DIR/archdroid" "$BIN_PATH"
 chmod +x "$BIN_PATH"
 ok "CLI installed → $BIN_PATH"
 
@@ -66,7 +66,7 @@ ok "CLI installed → $BIN_PATH"
 if ! echo "$PATH" | grep -q "/data/local/bin"; then
   warn "/data/local/bin not in your PATH"
   info "Add to your shell config: export PATH=/data/local/bin:\$PATH"
-  info "Or run directly: bash $INSTALL_DIR/cli/archdroid <command>"
+  info "Or run directly: $INSTALL_DIR/archdroid <command>"
 fi
 
 echo ""
@@ -75,5 +75,9 @@ echo "  ╔═══════════════════════
 echo "  ║      ArchDroid installed successfully! 🎉        ║"
 echo "  ╚══════════════════════════════════════════════════╝"
 echo -e "${RESET}"
-echo -e "  Next step: ${BOLD}archdroid init${RESET}"
+echo ""
+info "Next steps:"
+echo "  1. Run: ${BOLD}archdroid bootstrap${RESET} (initial installation)"
+echo "  2. Run: ${BOLD}archdroid start${RESET} (enter chroot)"
+echo "  3. Run: ${BOLD}archdroid help${RESET} (see all commands)"
 echo ""
