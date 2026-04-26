@@ -585,9 +585,18 @@ check_system_requirements() {
         exit 1
     fi
 
-    # Validation phase
+    # Validation phase — debug: show staging contents before validating
+    info "DEBUG: staging dir listing before validation:"
+    ls -la "$staging_dir" 2>&1 || true
+    ls -la "$staging_dir/bin" 2>&1 || true
+    ls -la "$staging_dir/lib" 2>&1 || true
+
     if ! validate_staging_rootfs "$staging_dir"; then
-        rm -rf "$staging_dir"
+        export ARCHDROID_DEBUG_KEEP_STAGING=1
+        warn "Staging dir preserved at $staging_dir for manual inspection"
+        warn "  Manual test: chroot $staging_dir /bin/bash"
+        warn "  Manual test: ls -la $staging_dir"
+        warn "  Remove when done: rm -rf $staging_dir"
         exit 1
     fi
 
@@ -673,9 +682,13 @@ bootstrap_cleanup() {
             done
         fi
 
-        # Clean up staging directories
+        # Clean up staging directories — skip if validation failed (preserved for debugging)
         if [ -n "${ARCH_PATH:-}" ]; then
-            rm -rf "${ARCH_PATH}.staging" "${ARCH_PATH}.old" 2>/dev/null || true
+            rm -rf "${ARCH_PATH}.old" 2>/dev/null || true
+            # Only wipe staging if it wasn't preserved for debug inspection
+            if [ "${ARCHDROID_DEBUG_KEEP_STAGING:-0}" != "1" ]; then
+                rm -rf "${ARCH_PATH}.staging" 2>/dev/null || true
+            fi
         fi
 
         warn "Cleanup completed - no partial artifacts left"
