@@ -647,6 +647,7 @@ check_system_requirements() {
         mount -o remount,exec /data 2>/dev/null || true
         mkdir -p "$ARCH_PATH/proc" "$ARCH_PATH/sys" "$ARCH_PATH/dev" "$ARCH_PATH/etc"
         [ -L "$ARCH_PATH/lib" ] && [ ! -e "$ARCH_PATH/lib" ] && ln -sf usr/lib "$ARCH_PATH/lib" 2>/dev/null || true
+        [ ! -c "$ARCH_PATH/dev/tty" ] && mknod -m 666 "$ARCH_PATH/dev/tty" c 5 0 2>/dev/null || true
 
         chroot "$ARCH_PATH" /bin/bash -c 'exit 0' >/dev/null 2>&1
     ) 2>/dev/null; then
@@ -656,6 +657,20 @@ check_system_requirements() {
     if [ "$final_exec_ok" = true ]; then
         ok "Final-location chroot: PASSED"
         echo "SUCCESS: Final-location chroot test passed" >> "$BOOTSTRAP_LOG"
+
+        # Post-install: initialize pacman keys in the new rootfs
+        info "Initializing pacman keyring..."
+        if (
+            mount -t proc  proc  "$ARCH_PATH/proc" 2>/dev/null || true
+            mount -t sysfs sysfs "$ARCH_PATH/sys"  2>/dev/null || true
+            chroot "$ARCH_PATH" /bin/bash -c 'pacman-key --init && pacman-key --populate archlinuxarm' >/dev/null 2>&1
+        ) 2>/dev/null; then
+            ok "pacman keyring initialized"
+            echo "SUCCESS: pacman-key initialized" >> "$BOOTSTRAP_LOG"
+        else
+            warn "pacman-key init failed — run manually inside chroot"
+            echo "WARN: pacman-key init failed" >> "$BOOTSTRAP_LOG"
+        fi
 
         # Run non-fatal layers (mounts, network, environment) — warn only
         "${SCRIPT_DIR}/verify.sh" >/dev/null 2>&1 || true

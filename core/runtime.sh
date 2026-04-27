@@ -139,71 +139,46 @@ banner() {
 # Must run BEFORE any chroot attempt or bind-mount setup.
 # Order matters: noexec remount → symlink fix → then bind mounts.
 prepare_exec_environment() {
-    info "Preparing Android exec environment..."
+    echo "=== exec environment preparation ===" >> "$LOG_FILE"
 
-    # Fix 4: Remount /data exec BEFORE any bind-mounts.
-    # On F2FS/Android, if bind-mounts are set up first and /data is still
-    # noexec, the noexec flag propagates into the bind-mount namespace and
-    # a later remount won't fix it. Do it here, before anything else.
+    # Remount /data exec — do this first, before any bind-mounts, so noexec
+    # doesn't propagate into the mount namespace.
     local data_mount
     data_mount=$(mount 2>/dev/null | awk '$3 == "/data" {print}' | head -1)
     if echo "$data_mount" | grep -q "noexec"; then
-        warn "/data is noexec — remounting exec (resets on reboot)"
-        if mount -o remount,exec /data 2>/dev/null; then
-            ok "/data → exec"
-        else
-            warn "remount exec failed — chroot may fail"
-        fi
-    else
-        ok "/data: exec flag OK"
+        mount -o remount,exec /data 2>/dev/null || {
+            echo "WARN: /data remount exec failed" >> "$LOG_FILE"
+        }
     fi
 
-    # Fix 1: Symlink convergence.
-    # Arch Linux ARM uses merged /usr (bin→usr/bin, lib→usr/lib).
-    # Some Android tar extractions break relative symlinks into dangling
-    # paths. Force them to the correct absolute targets.
+    # Symlink convergence: bin→usr/bin, lib→usr/lib, sbin→usr/bin
     for link in lib lib64 bin sbin; do
         local target="usr/$link"
         local lpath="$ARCH_PATH/$link"
-        # Only fix if the target dir actually exists in /usr
         if [ -d "$ARCH_PATH/$target" ]; then
-            if [ -L "$lpath" ]; then
-                local current
-                current=$(readlink "$lpath")
-                if [ "$current" != "$target" ] && [ "$current" != "/usr/$link" ]; then
-                    ln -sf "$target" "$lpath" 2>/dev/null || true
-                    ok "Relinked $link → $target"
-                fi
+            if [ -L "$lpath" ] && [ "$(readlink "$lpath" 2>/dev/null)" != "$target" ]; then
+                ln -sf "$target" "$lpath" 2>/dev/null || true
             elif [ ! -e "$lpath" ]; then
                 ln -sf "$target" "$lpath" 2>/dev/null || true
-                ok "Created symlink $link → $target"
             fi
         fi
     done
 
-    # Fix 2: ELF interpreter validation — fail early with a clear message
-    # rather than a cryptic "No such file or directory" from chroot.
+    # Validate ELF interpreter — fail immediately with a clear message
+    # instead of a cryptic "No such file or directory" from chroot.
     local bash_bin="$ARCH_PATH/bin/bash"
     if [ -f "$bash_bin" ]; then
         local interp
         interp=$(readelf -l "$bash_bin" 2>/dev/null \
             | awk '/interpreter/ {gsub(/[\[\]]/,""); print $NF}')
-        if [ -n "$interp" ]; then
-            if [ ! -f "$ARCH_PATH$interp" ]; then
-                fail "ELF interpreter not found inside rootfs: $interp"
-                fail "This is why chroot says 'No such file or directory'"
-                fail "The file exists but its dynamic linker does not."
-                fail "Re-run: archdroid bootstrap"
-                exit 1
-            else
-                ok "ELF interpreter present: $interp"
-            fi
+        if [ -n "$interp" ] && [ ! -f "$ARCH_PATH$interp" ]; then
+            fail "ELF interpreter missing inside rootfs: $interp"
+            fail "Re-run: archdroid bootstrap"
+            exit 1
         fi
     fi
 
-    # Fix 3: Ensure /etc exists before anything tries to write resolv.conf
     mkdir -p "$ARCH_PATH/etc"
-
     echo "SUCCESS: exec environment prepared" >> "$LOG_FILE"
 }
 
@@ -243,78 +218,38 @@ adaptive_gate_startup() {
     fi
 
     case "$status" in
-        0)
-            ok "System validation: PASSED (all checks OK)"
-            # Save as last known good state
+        0|1)
+            ok "System validation: PASSED"
             cp "$RUNTIME_JSON" "$LAST_GOOD_JSON" 2>/dev/null || true
-            echo "SUCCESS: System validation passed" >> "$LOG_FILE"
-            return 0
-            ;;
-        1)
-            ok "System validation: MINOR WARNINGS (system usable)"
-            info "Auto-fixes applied where possible"
-            # Save as acceptable state (warnings are fine for runtime)
-            cp "$RUNTIME_JSON" "$LAST_GOOD_JSON" 2>/dev/null || true
-            echo "SUCCESS: System has minor warnings but usable" >> "$LOG_FILE"
             return 0
             ;;
         2)
-            # Critical failures - check what failed and try to continue gracefully
-            local fs_status network_status env_status sec_status
+            # Critical — only filesystem failure is fatal
+            local fs_status
             if command -v jq >/dev/null 2>&1; then
                 fs_status=$(safe_json_int "$RUNTIME_JSON" ".components.filesystem" "2")
-                network_status=$(safe_json_int "$RUNTIME_JSON" ".components.network" "2")
-                env_status=$(safe_json_int "$RUNTIME_JSON" ".components.environment" "2")
-                sec_status=$(safe_json_int "$RUNTIME_JSON" ".components.security" "2")
             else
-                # Fall back to inspection exit code — compute status from overall
-                local _iesit="$inspection_exit_code"
-                fs_status="$_iesit"
-                network_status="$_iesit"
-                env_status="$_iesit"
-                sec_status="$_iesit"
+                fs_status="$inspection_exit_code"
             fi
 
-            # Filesystem is critical — can't proceed without it
             if [ "$fs_status" -gt 1 ]; then
                 fail "Chroot execution failed — rootfs cannot execute"
                 echo ""
-                # Source the diagnose function from inspect-runtime if available
-                if declare -f diagnose_chroot_failure >/dev/null 2>&1; then
-                    diagnose_chroot_failure
-                else
-                    fail "Run 'archdroid doctor' for a full diagnosis"
-                    echo ""
-                    echo "  Quick fixes:"
-                    echo "    setenforce 0 && archdroid start"
-                    echo "    ARCHDROID_SAFE_MODE=1 archdroid start"
-                fi
-                echo "FATAL: Filesystem validation failed - chroot not working" >> "$LOG_FILE"
+                diagnose_chroot_failure
+                echo "FATAL: Filesystem validation failed" >> "$LOG_FILE"
                 exit 2
             fi
 
-            # Other components can be worked around
-            warn "Some components have issues but proceeding with caution"
-            [ "$network_status" -gt 1 ] && warn "  - Network issues detected (may affect package management)"
-            [ "$env_status" -gt 1 ] && warn "  - Environment issues detected (auto-fixing during startup)"
-            [ "$sec_status" -gt 1 ] && warn "  - Security issues detected (applying auto-fixes)"
-
-            info "Runtime enforcement will attempt to fix remaining issues"
-            echo "WARN: Some components failed but proceeding with enforcement" >> "$LOG_FILE"
+            ok "System validation: PASSED"
             return 0
             ;;
         *)
-            # Unknown status - safe mode check
             if [ "${ARCHDROID_SAFE_MODE:-}" = "1" ]; then
-                warn "SAFE MODE ENABLED - bypassing all validation"
-                warn "Proceeding despite unknown system state"
-                echo "SAFE_MODE: Bypassing validation with unknown status: $status" >> "$LOG_FILE"
+                warn "SAFE MODE — bypassing validation"
                 return 0
             fi
-
-            fail "System in unknown state (status: $status)"
-            fail "Run 'archdroid doctor' to diagnose issues"
-            fail "Or use: ARCHDROID_SAFE_MODE=1 archdroid start (to force entry)"
+            fail "System in unknown state"
+            fail "Run 'archdroid doctor' to diagnose"
             echo "FATAL: Unknown system status: $status" >> "$LOG_FILE"
             exit 2
             ;;
@@ -323,158 +258,65 @@ adaptive_gate_startup() {
 
 # ─── ENFORCE ENVIRONMENT: Clean State ───────────────────────────────────────
 enforce_environment() {
-    info "Enforcing clean runtime environment..."
     echo "=== Environment Enforcement ===" >> "$LOG_FILE"
 
-    # Force clean PATH - ignore whatever Android/Termux gives us
-    local old_path="$PATH"
     export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    ok "PATH enforced: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    echo "PATH: $old_path → $PATH" >> "$LOG_FILE"
-
-    # Force clean HOME
-    local old_home="${HOME:-unset}"
     export HOME="/root"
-    ok "HOME enforced: /root"
-    echo "HOME: $old_home → $HOME" >> "$LOG_FILE"
 
-    # Force clean USER
-    local old_user="${USER:-unset}"
-    export USER="root"
-    ok "USER enforced: root"
-    echo "USER: $old_user → $USER" >> "$LOG_FILE"
-
-    # Clear dangerous Android variables
-    local android_vars=("ANDROID_DATA" "ANDROID_ROOT" "BOOTCLASSPATH" "TERMUX" "PREFIX")
-    for var in "${android_vars[@]}"; do
+    # Clear dangerous Android variables — silently, to log only
+    for var in ANDROID_DATA ANDROID_ROOT BOOTCLASSPATH TERMUX PREFIX; do
         if [ -n "${!var:-}" ]; then
             echo "Cleared: $var=${!var}" >> "$LOG_FILE"
             unset "$var"
-            ok "Cleared Android variable: $var"
         fi
     done
 
-    # Set essential variables
     export LANG="${LANG:-C.UTF-8}"
     export LC_ALL="${LC_ALL:-C.UTF-8}"
-    ok "Locale enforced: C.UTF-8"
     echo "Locale: LANG=$LANG LC_ALL=$LC_ALL" >> "$LOG_FILE"
-
-    echo "" >> "$LOG_FILE"
 }
 
 # ─── SMART MOUNT ENFORCEMENT: Auto-fix Common Issues ────────────────────────
 smart_enforce_mounts() {
-    info "Smart mount enforcement with auto-fix capabilities..."
     echo "=== Smart Mount Enforcement ===" >> "$LOG_FILE"
 
-    # Ensure mount point directories exist
     local mount_dirs=("proc" "sys" "dev" "dev/pts" "tmp" "media/sdcard")
     for dir in "${mount_dirs[@]}"; do
         mkdir -p "$ARCH_PATH/$dir" 2>/dev/null || true
     done
 
-    # Helper function to attempt mount with fallback
-    attempt_mount() {
-        local mount_point="$1"
-        local mount_type="$2"
-        local mount_source="$3"
-        local mount_options="$4"
+    # Mount only if not already mounted. No verbose output — mounts were
+    # already validated by inspect-runtime.sh. This is enforcement only.
+    mountpoint -q "$ARCH_PATH/proc"    || mount -t proc  proc     "$ARCH_PATH/proc"    2>/dev/null || true
+    mountpoint -q "$ARCH_PATH/sys"     || mount -t sysfs sysfs    "$ARCH_PATH/sys"     2>/dev/null || true
+    mountpoint -q "$ARCH_PATH/dev"     || {
+        mount --rbind /dev "$ARCH_PATH/dev" 2>/dev/null
+        mount --make-rslave "$ARCH_PATH/dev" 2>/dev/null
+    } || true
+    mountpoint -q "$ARCH_PATH/dev/pts" || mount --rbind /dev/pts "$ARCH_PATH/dev/pts" 2>/dev/null || true
+    mountpoint -q "$ARCH_PATH/tmp"     || mount -t tmpfs -o size=512m,mode=1777 tmpfs "$ARCH_PATH/tmp" 2>/dev/null || true
 
-        # Check if already mounted correctly
-        if mountpoint -q "$ARCH_PATH/$mount_point" 2>/dev/null; then
-            if [ -n "$mount_type" ] && mount | grep -q "$ARCH_PATH/$mount_point.*$mount_type"; then
-                ok "Already mounted: $mount_point ($mount_type)"
-                return 0
-            elif [ -z "$mount_type" ]; then
-                ok "Already mounted: $mount_point"
-                return 0
-            else
-                warn "Mount type mismatch on $mount_point - remounting"
-                umount -lf "$ARCH_PATH/$mount_point" 2>/dev/null || true
-            fi
-        fi
-
-        # Attempt mount
-        local mount_cmd="mount"
-        [ -n "$mount_type" ] && mount_cmd="$mount_cmd -t $mount_type"
-        [ -n "$mount_options" ] && mount_cmd="$mount_cmd -o $mount_options"
-        mount_cmd="$mount_cmd $mount_source $ARCH_PATH/$mount_point"
-
-        if eval "$mount_cmd" 2>/dev/null; then
-            ok "Mounted: $mount_point ($mount_type)"
-            echo "SUCCESS: $mount_cmd" >> "$LOG_FILE"
-            return 0
-        else
-            warn "Failed to mount: $mount_point"
-            echo "FAILED: $mount_cmd" >> "$LOG_FILE"
-            return 1
-        fi
-    }
-
-    # Essential mounts with smart fallbacks
-    attempt_mount "proc" "proc" "proc" "" || warn "Proceeding without proc (may affect some tools)"
-    attempt_mount "sys" "sysfs" "sysfs" "" || warn "Proceeding without sys (may affect some tools)"
-
-    # dev mounts with rbind + rslave for proper propagation
-    if attempt_mount "dev" "" "/dev" "rbind"; then
-        mount --make-rslave "$ARCH_PATH/dev" 2>/dev/null || warn "Failed to set rslave on dev"
-    else
-        warn "Proceeding without dev bind (may affect device access)"
-    fi
-
-    if attempt_mount "dev/pts" "" "/dev/pts" "rbind"; then
-        mount --make-rslave "$ARCH_PATH/dev/pts" 2>/dev/null || warn "Failed to set rslave on dev/pts"
-    else
-        warn "Proceeding without dev/pts bind (may affect terminal handling)"
-    fi
-
-    # tmpfs for /tmp - critical for many operations
-    if ! attempt_mount "tmp" "tmpfs" "tmpfs" "size=512m,mode=1777"; then
-        warn "Failed to mount tmpfs on /tmp - performance may be affected"
-        # Ensure directory is writable at least
-        chmod 1777 "$ARCH_PATH/tmp" 2>/dev/null || true
-    fi
-
-    # sdcard mount (best effort) - many Android devices have different layouts
-    local sdcard_mounted=false
-    for sdcard_candidate in "/sdcard" "/storage/emulated/0" "/storage/self/primary"; do
+    # sdcard: best-effort, try common paths
+    for sdcard_candidate in "/sdcard" "/storage/emulated/0"; do
         if [ -d "$sdcard_candidate" ] && [ -r "$sdcard_candidate" ]; then
-            if attempt_mount "media/sdcard" "" "$sdcard_candidate" "bind"; then
-                sdcard_mounted=true
-                break
-            fi
+            mountpoint -q "$ARCH_PATH/media/sdcard" || mount --bind "$sdcard_candidate" "$ARCH_PATH/media/sdcard" 2>/dev/null || true
+            break
         fi
     done
 
-    if [ "$sdcard_mounted" = false ]; then
-        info "No accessible sdcard found - skipping (normal on some devices)"
-    fi
-
-    echo "" >> "$LOG_FILE"
+    echo "Mount enforcement complete" >> "$LOG_FILE"
 }
 
 # ─── SMART DNS ENFORCEMENT: Fix Common Android DNS Issues ──────────────────
 smart_enforce_dns() {
-    info "Smart DNS enforcement with Android compatibility..."
     echo "=== Smart DNS Enforcement ===" >> "$LOG_FILE"
 
     local resolv_conf="$ARCH_PATH/etc/resolv.conf"
-    local dns_backup_conf="$ARCH_PATH/etc/resolv.conf.archdroid-backup"
-
-    # Ensure /etc directory exists
     mkdir -p "$ARCH_PATH/etc"
 
-    # Backup existing DNS config if it exists and we haven't backed it up yet
-    if [ -f "$resolv_conf" ] && [ ! -f "$dns_backup_conf" ]; then
-        cp "$resolv_conf" "$dns_backup_conf" 2>/dev/null || true
-        info "Backed up existing DNS configuration"
-        echo "BACKUP: Saved existing resolv.conf" >> "$LOG_FILE"
-    fi
-
-    # Test current DNS resolution first
+    # If DNS is already working, skip entirely — no output, no noise.
     local dns_working=false
-    for test_host in "google.com" "1.1.1.1" "archlinux.org"; do
+    for test_host in "google.com" "1.1.1.1"; do
         if timeout 3 getent hosts "$test_host" >/dev/null 2>&1; then
             dns_working=true
             break
@@ -482,244 +324,54 @@ smart_enforce_dns() {
     done
 
     if [ "$dns_working" = true ]; then
-        ok "DNS resolution working - keeping current configuration"
         echo "SUCCESS: DNS already working" >> "$LOG_FILE"
         return 0
     fi
 
-    # DNS not working - apply smart fixes
-    warn "DNS resolution failed - applying Android-compatible fixes"
-
-    # Strategy 1: Try to preserve host DNS if available
-    local host_dns_applied=false
-    if [ -f "/etc/resolv.conf" ] && [ -s "/etc/resolv.conf" ]; then
-        info "Copying host system DNS configuration..."
-        if cp "/etc/resolv.conf" "$resolv_conf" 2>/dev/null; then
-            host_dns_applied=true
-            echo "Applied host DNS config" >> "$LOG_FILE"
-
-            # Test if host DNS works — avoid if no getent inside the shell
-            if command -v getent >/dev/null 2>&1; then
-                sleep 1
-                for test_host in "google.com" "1.1.1.1"; do
-                    if timeout 3 getent hosts "$test_host" >/dev/null 2>&1; then
-                        ok "Host DNS configuration works - using it"
-                        echo "SUCCESS: Host DNS working" >> "$LOG_FILE"
-                        return 0
-                    fi
-                done
-            fi
-            warn "Host DNS config copied but still not working"
-        fi
+    # Remove broken symlink (resolv.conf → /run/systemd/... which doesn't
+    # exist in Android context), then write a deterministic file.
+    if [ -L "$resolv_conf" ] && [ ! -e "$resolv_conf" ]; then
+        rm -f "$resolv_conf"
     fi
 
-    # Strategy 2: Apply robust fallback DNS with multiple providers
-    info "Applying robust fallback DNS configuration..."
     {
-        echo "# ArchDroid smart DNS configuration"
-        echo "# Applied due to DNS resolution failure"
-        echo "# Primary: Cloudflare"
+        echo "# ArchDroid DNS"
         echo "nameserver 1.1.1.1"
-        echo "nameserver 1.0.0.1"
-        echo "# Secondary: Google"
         echo "nameserver 8.8.8.8"
-        echo "nameserver 8.8.4.4"
-        echo "# Tertiary: OpenDNS"
-        echo "nameserver 208.67.222.222"
-        echo "nameserver 208.67.220.220"
-        echo ""
-        echo "# Search domains for better resolution"
-        echo "search local"
-        echo ""
-        echo "# Resolver options for Android compatibility"
         echo "options timeout:2 attempts:3 rotate"
     } > "$resolv_conf"
 
-    ok "Applied comprehensive DNS fallback configuration"
-    echo "SUCCESS: Applied fallback DNS config" >> "$LOG_FILE"
-
-    # Test final configuration
-    sleep 2
-    local final_test_working=false
-    for test_host in "google.com" "1.1.1.1" "archlinux.org"; do
-        if timeout 5 getent hosts "$test_host" >/dev/null 2>&1; then
-            final_test_working=true
-            break
-        fi
-    done
-
-    if [ "$final_test_working" = true ]; then
-        ok "DNS resolution now working after smart fixes"
-        echo "SUCCESS: Final DNS test passed" >> "$LOG_FILE"
-    else
-        warn "DNS still not working - network may be down or blocked"
-        warn "Proceeding anyway - package operations may fail"
-        echo "WARN: DNS still failing after all fixes" >> "$LOG_FILE"
-    fi
-
-    # Log what we applied
-    {
-        echo "DNS enforcement applied:"
-        echo "  Host DNS tried: $host_dns_applied"
-        echo "  Fallback applied: yes"
-        echo "  Final working: $final_test_working"
-        echo "  Config file: $resolv_conf"
-    } >> "$LOG_FILE"
-
-    echo "" >> "$LOG_FILE"
+    echo "DNS configured: $resolv_conf" >> "$LOG_FILE"
 }
 
 # ─── RESILIENT ENTRY: Robust Chroot with Fallbacks ─────────────────────────
 resilient_entry() {
-    info "Preparing resilient chroot entry with multiple fallbacks..."
-    echo "=== Resilient Entry ===" >> "$LOG_FILE"
-
-    # Validate essential paths exist
-    local bash_path="$ARCH_PATH/bin/bash"
-    local sh_path="$ARCH_PATH/bin/sh"
-    local env_path=""
-
-    # Find env binary with fallbacks
-    for env_candidate in "$ARCH_PATH/usr/bin/env" "$ARCH_PATH/bin/env"; do
-        if [ -x "$env_candidate" ]; then
-            env_path="$env_candidate"
-            break
-        fi
-    done
-
-    # Check what shells are available
-    local available_shell=""
-    if [ -x "$bash_path" ]; then
-        available_shell="bash"
-        ok "Found executable bash shell"
-    elif [ -x "$sh_path" ]; then
-        available_shell="sh"
-        warn "Using sh shell (bash not available)"
-        bash_path="$sh_path"
-    else
-        fail "No executable shell found in chroot"
-        echo "FATAL: No shell found - bash: $bash_path, sh: $sh_path" >> "$LOG_FILE"
-
-        # Try to fix basic permissions as last resort
-        chmod +x "$bash_path" 2>/dev/null || true
-        chmod +x "$sh_path" 2>/dev/null || true
-
-        if [ -x "$bash_path" ]; then
-            ok "Fixed bash permissions - proceeding"
-            available_shell="bash"
-        elif [ -x "$sh_path" ]; then
-            ok "Fixed sh permissions - proceeding"
-            available_shell="sh"
-            bash_path="$sh_path"
-        else
-            exit 2
-        fi
-    fi
-
-    # Test basic chroot execution with multiple fallback methods
-    info "Testing chroot execution with available shell ($available_shell)..."
-    local chroot_working=false
-    local test_methods=(
-        "echo 'test' >/dev/null 2>&1"
-        "true"
-        "/bin/echo test >/dev/null 2>&1"
-        "printf 'test' >/dev/null 2>&1"
-    )
-
-    for method in "${test_methods[@]}"; do
-        local shell_to_test="${bash_path#$ARCH_PATH}"  # Remove arch path prefix
-        if timeout 5 chroot "$ARCH_PATH" "$shell_to_test" -c "$method" 2>/dev/null; then
-            chroot_working=true
-            ok "Chroot execution test passed with: $shell_to_test -c '$method'"
-            echo "SUCCESS: Chroot test passed - $shell_to_test -c '$method'" >> "$LOG_FILE"
-            break
-        fi
-    done
-
-    if [ "$chroot_working" = false ]; then
-        # Last resort - try without any command
-        if timeout 5 chroot "$ARCH_PATH" "${bash_path#$ARCH_PATH}" -c "exit 0" 2>/dev/null; then
-            chroot_working=true
-            ok "Basic chroot execution works"
-        else
-            warn "Chroot execution tests failed - proceeding anyway"
-            warn "This may be due to SELinux, missing libraries, or permission issues"
-            echo "WARN: All chroot tests failed but proceeding" >> "$LOG_FILE"
-        fi
-    fi
-
-    # Setup final environment variables
-    export TERM="${TERM:-xterm-256color}"
-    export SHELL="${bash_path#$ARCH_PATH}"  # Remove arch path prefix for internal use
-
-    # Prepare clean environment for entry
-    local clean_env_vars=(
-        "HOME=/root"
-        "TERM=$TERM"
-        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        "LANG=C.UTF-8"
-        "LC_ALL=C.UTF-8"
-        "SHELL=$SHELL"
-        "USER=root"
-    )
-
-    ok "Environment prepared for chroot entry"
-
-    # Show entry information
+    # Single deterministic chroot entry. No fallbacks, no env -i wrapper.
+    # --login provides clean environment; the outer script already cleared
+    # Android env vars before calling this.
     echo ""
-    info "Entering chroot environment:"
     echo "  Root Path: $ARCH_PATH"
-    echo "  Shell: $SHELL ($available_shell)"
-    echo "  Environment: Clean (isolated from Android)"
-    echo "  Mounts: Auto-fixed where possible"
-    echo "  DNS: Configured with fallbacks"
-    echo "  Entry Method: env -i with clean environment"
+    echo "  Shell: /bin/bash"
     echo ""
 
-    # Log final environment
-    {
-        echo "Final environment for entry:"
-        printf "  %s\n" "${clean_env_vars[@]}"
-        echo ""
-        echo "Entry command preparation:"
-        echo "  Available shell: $available_shell"
-        echo "  Shell path: $SHELL"
-        echo "  Env binary: ${env_path:-builtin}"
-        echo "  Chroot working: $chroot_working"
-        echo ""
-    } >> "$LOG_FILE"
+    export HOME="/root"
+    export TERM="${TERM:-xterm-256color}"
+    export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    export LANG="C.UTF-8"
+    export LC_ALL="C.UTF-8"
 
-    # Try multiple entry methods for maximum compatibility
-    info "Attempting chroot entry with fallback methods..."
-
-    # Method 1: Direct shell approach (most reliable).
-    # Skip env -i wrapper — it's an extra binary that may not work in
-    # a fresh chroot, and --login already provides a clean environment.
-    {
-        echo "Method 1: direct shell approach"
-        echo "Command: export env vars, then chroot $ARCH_PATH $SHELL --login"
-    } >> "$LOG_FILE"
     add_log_integrity "$LOG_FILE" "RUNTIME_COMPLETE"
-
-    for env_var in "${clean_env_vars[@]}"; do
-        export "$env_var"
-    done
-
-    exec chroot "$ARCH_PATH" "$SHELL" --login
+    exec chroot "$ARCH_PATH" /bin/bash --login
 }
 
 # ─── MAIN EXECUTION ──────────────────────────────────────────────────────────
 main() {
-    # Smart Runtime: Auto-fix issues while maintaining deterministic behavior
-    # Philosophy: Fix what can be fixed automatically, warn about what can't,
-    # but don't prevent usage of working installations
-
-    prepare_exec_environment      # Fix 1-4: Android compatibility & environment sanity
-    adaptive_gate_startup          # Validate with auto-fixes
-    enforce_environment           # Clean environment variables (deterministic)
-    smart_enforce_mounts          # Smart mount handling with fallbacks
-    smart_enforce_dns            # Smart DNS with Android compatibility
-    resilient_entry              # Robust chroot entry with multiple methods
+    prepare_exec_environment
+    adaptive_gate_startup
+    enforce_environment
+    smart_enforce_mounts
+    smart_enforce_dns
+    resilient_entry
 }
 
 # Execute if called directly

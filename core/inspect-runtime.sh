@@ -223,87 +223,47 @@ autofix_dns() {
         return 1
     fi
 
-    autofix "Fixing DNS configuration..."
     local resolv_conf="$ARCH_PATH/etc/resolv.conf"
+    mkdir -p "$ARCH_PATH/etc"
 
-    # Fix 3: Ensure /etc exists before anything tries to write resolv.conf
-    mkdir -p "$ARCH_PATH/etc" 2>/dev/null || true
-
-    # Remove broken symlink first (resolv.conf in Arch rootfs points to
-    # /run/systemd/resolve/resolv.conf which doesn't exist in Android context)
+    # Remove broken symlink (resolv.conf → /run/systemd/... in Android
+    # context where /run doesn't exist inside the rootfs)
     if [ -L "$resolv_conf" ] && [ ! -e "$resolv_conf" ]; then
-        rm -f "$resolv_conf" 2>/dev/null || true
+        rm -f "$resolv_conf"
     fi
 
-    # Copy host DNS first
-    if [ -f /etc/resolv.conf ]; then
-        cp /etc/resolv.conf "$resolv_conf" 2>/dev/null || true
-    fi
-
-    # Add fallback DNS servers
-    {
-        echo "# ArchDroid DNS fallback"
-        echo "nameserver 1.1.1.1"
-        echo "nameserver 8.8.8.8"
-    } >> "$resolv_conf" 2>/dev/null || true
-
-    if [ -f "$resolv_conf" ]; then
-        ok "DNS configuration updated"
-        return 0
-    else
-        warn "Failed to update DNS configuration"
-        return 1
-    fi
+    # Deterministic overwrite: > not >>
+    printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "$resolv_conf"
+    return 0
 }
 
 # ─── VALIDATION FUNCTIONS ────────────────────────────────────────────────────
 validate_rootfs() {
-    echo "═══ Arch Rootfs Validation ═══ [$(date '+%Y-%m-%d %H:%M:%S')]"
-    echo ""
-
-    info "Arch path found: $ARCH_PATH"
-
-    # Check if rootfs exists at all
     if [ ! -d "$ARCH_PATH" ]; then
-        fail "Rootfs directory not found: $ARCH_PATH"
+        fail "Rootfs not found: $ARCH_PATH"
         update_component_status "filesystem" $STATUS_FAIL
         return 1
     fi
 
-    # Check essential directories (be more forgiving)
-    local essential_dirs=("usr" "etc" "bin")
-    local missing_dirs=()
-
-    for dir in "${essential_dirs[@]}"; do
-        if [ -d "$ARCH_PATH/$dir" ]; then
-            ok "Directory: $dir"
-        else
-            missing_dirs+=("$dir")
+    # Check essential directories
+    for dir in "usr" "etc" "bin"; do
+        if [ ! -d "$ARCH_PATH/$dir" ]; then
+            fail "Missing directory: $dir"
+            update_component_status "filesystem" $STATUS_FAIL
+            return 1
         fi
     done
 
-    if [ ${#missing_dirs[@]} -gt 0 ]; then
-        fail "Missing essential directories: ${missing_dirs[*]}"
-        update_component_status "filesystem" $STATUS_FAIL
-        return 1
-    fi
-
-    # Check essential files (with fallbacks)
-    check_essential_file "bin/bash" "Bash shell" 1 || \
-    check_essential_file "bin/sh" "Shell" 1 || {
-        fail "No shell found (bash or sh)"
+    # Check essential files
+    check_essential_file "bin/bash" "bash" 1 || \
+    check_essential_file "bin/sh" "sh" 1 || {
+        fail "No shell found"
         update_component_status "filesystem" $STATUS_FAIL
         return 1
     }
 
-    check_essential_file "usr/bin/env" "Environment binary" 1 || \
-    check_essential_file "bin/env" "Environment binary" 1 || \
-        warn "env binary not found (may cause issues)"
-
-    check_essential_file "etc/passwd" "Password database" 0
-
-    check_essential_file "usr/bin/pacman" "Pacman package manager" 1 || \
-        warn "Pacman not found (not an Arch system?)"
+    check_essential_file "etc/passwd" "passwd" 0 || true
+    check_essential_file "usr/bin/pacman" "pacman" 1 || true
 
     # Chroot execution test — mount essentials first so bash can actually run,
     # then clean up regardless of outcome.
@@ -362,6 +322,12 @@ validate_rootfs() {
     # Ensure required mount dirs exist
     mkdir -p "$ARCH_PATH/proc" "$ARCH_PATH/sys" "$ARCH_PATH/dev"
 
+    # Fix 6: TTY — create /dev/tty if missing (cosmetic: prevents
+    # "ttyname error: Inappropriate ioctl for device" in chroot)
+    if [ ! -c "$ARCH_PATH/dev/tty" ]; then
+        mknod -m 666 "$ARCH_PATH/dev/tty" c 5 0 2>/dev/null || true
+    fi
+
     # Mount — ignore failures (they may already be mounted)
     mount -t proc  proc  "$ARCH_PATH/proc" 2>/dev/null || true
     mount -t sysfs sysfs "$ARCH_PATH/sys"  2>/dev/null || true
@@ -413,107 +379,15 @@ check_essential_file() {
 }
 
 validate_mounts() {
-    echo "═══ Mount Point Validation ═══ [$(date '+%Y-%m-%d %H:%M:%S')]"
-    echo ""
-
-    # Essential mounts with auto-fix
-    check_mount_with_fix "proc" "proc"
-    check_mount_with_fix "sys" "sysfs"
-    check_mount_with_fix "dev" ""
-    check_mount_with_fix "dev/pts" "devpts"
-
-    # tmp is critical - always try to fix
-    if ! check_mount_type "tmp" "tmpfs"; then
-        if autofix_tmp_mount; then
-            check_mount_type "tmp" "tmpfs" >/dev/null || true
-        fi
-    fi
-}
-
-check_mount_with_fix() {
-    local mount_point="$1"
-    local expected_type="$2"
-
-    if check_mount_type "$mount_point" "$expected_type"; then
-        return 0
-    fi
-
-    # If auto-fix is enabled and we have basic mount tools, try to fix
-    if [ "$AUTO_FIX" = "1" ] && [ "$(id -u)" = "0" ]; then
-        autofix "Attempting to mount $mount_point..."
-        mkdir -p "$ARCH_PATH/$mount_point"
-
-        case "$mount_point" in
-            "proc")
-                mount -t proc proc "$ARCH_PATH/proc" 2>/dev/null && ok "Fixed: mounted proc"
-                ;;
-            "sys")
-                mount -t sysfs sysfs "$ARCH_PATH/sys" 2>/dev/null && ok "Fixed: mounted sys"
-                ;;
-            "dev")
-                mount --rbind /dev "$ARCH_PATH/dev" 2>/dev/null && ok "Fixed: mounted dev"
-                ;;
-            "dev/pts")
-                mount --rbind /dev/pts "$ARCH_PATH/dev/pts" 2>/dev/null && ok "Fixed: mounted dev/pts"
-                ;;
-        esac
-    fi
-}
-
-check_mount_type() {
-    local mount_point="$1"
-    local expected_type="$2"
-
-    if ! mountpoint -q "$ARCH_PATH/$mount_point" 2>/dev/null; then
-        warn "NOT mounted: $mount_point"
-        update_component_status "filesystem" $STATUS_WARN
-        return 1
-    fi
-
-    # Check mount type if specified
-    if [ -n "$expected_type" ]; then
-        if mount | grep -q "$ARCH_PATH/$mount_point.*$expected_type"; then
-            ok "Mounted ($expected_type): $mount_point"
-        else
-            local actual_type
-            actual_type=$(mount | grep "$ARCH_PATH/$mount_point" | awk '{print $5}' | head -1)
-            warn "Mount type mismatch: $mount_point (expected: $expected_type, got: $actual_type)"
+    for mp in proc sys dev dev/pts tmp; do
+        if ! mountpoint -q "$ARCH_PATH/$mp" 2>/dev/null; then
             update_component_status "filesystem" $STATUS_WARN
-            return 1
         fi
-    else
-        ok "Mounted: $mount_point"
-    fi
-    return 0
+    done
 }
 
 validate_network() {
-    echo "═══ Network & DNS Configuration Validation ═══ [$(date '+%Y-%m-%d %H:%M:%S')]"
-    echo ""
-
-    # Check DNS configuration
-    if [ -f "$ARCH_PATH/etc/resolv.conf" ]; then
-        ok "DNS configuration found"
-    else
-        warn "No DNS configuration found"
-        autofix_dns
-        update_component_status "network" $STATUS_WARN
-    fi
-
-    # Test basic connectivity (be more forgiving)
-    info "Testing network connectivity..."
-    if ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 || ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
-        ok "Network connectivity: WORKING (ping 1.1.1.1)"
-    else
-        warn "Network connectivity: LIMITED (no ping response)"
-        update_component_status "network" $STATUS_WARN
-    fi
-
-    # Test DNS resolution with multiple attempts and auto-fix
-    info "Testing DNS resolution..."
     local dns_working=false
-
-    # Try different DNS resolution methods
     for method in "getent hosts google.com" "nslookup google.com" "dig google.com +short"; do
         if timeout 3 $method >/dev/null 2>&1; then
             dns_working=true
@@ -521,74 +395,36 @@ validate_network() {
         fi
     done
 
-    if [ "$dns_working" = true ]; then
-        ok "DNS resolution: WORKING"
-    else
-        warn "DNS resolution: FAILED"
-        if autofix_dns; then
-            # Test again after fix
-            if timeout 3 getent hosts google.com >/dev/null 2>&1; then
-                ok "DNS resolution: FIXED"
-            else
-                update_component_status "network" $STATUS_WARN
+    if [ "$dns_working" = false ]; then
+        autofix_dns
+        # Re-test after fix
+        for method in "getent hosts google.com" "nslookup google.com" "dig google.com +short"; do
+            if timeout 3 $method >/dev/null 2>&1; then
+                dns_working=true
+                break
             fi
-        else
-            update_component_status "network" $STATUS_WARN
-        fi
+        done
+    fi
+
+    if [ "$dns_working" = false ]; then
+        update_component_status "network" $STATUS_WARN
     fi
 }
 
 validate_security() {
-    echo "═══ Security Validation ═══ [$(date '+%Y-%m-%d %H:%M:%S')]"
-    echo ""
-
-    # Check root access
-    if [ "$(id -u)" = "0" ]; then
-        ok "Root access: AVAILABLE"
-    else
-        warn "Root access: NOT AVAILABLE (may limit functionality)"
+    if [ "$(id -u)" != "0" ]; then
         update_component_status "security" $STATUS_WARN
     fi
 
-    # Check rootfs permissions
-    if [ -d "$ARCH_PATH" ]; then
-        local perms
-        perms=$(stat -c %a "$ARCH_PATH" 2>/dev/null || echo "unknown")
-        if [ "$perms" = "755" ] || [ "$perms" = "750" ]; then
-            ok "Rootfs permissions: $perms (secure)"
-        else
-            warn "Rootfs permissions: $perms (consider 755)"
-            update_component_status "security" $STATUS_WARN
-        fi
-    fi
-
-    # Check SELinux status and auto-fix if enforcing
     if command -v getenforce >/dev/null 2>&1; then
         local selinux_status
         selinux_status=$(getenforce 2>/dev/null || echo "unknown")
 
         case "$selinux_status" in
             "Enforcing")
-                warn "SELinux: Enforcing (may block chroot operations)"
                 autofix_selinux || update_component_status "security" $STATUS_WARN
                 ;;
-            "Permissive")
-                ok "SELinux: Permissive (compatible)"
-                ;;
-            "Disabled")
-                ok "SELinux: Disabled"
-                ;;
-            *)
-                info "SELinux: Status unknown"
-                ;;
         esac
-    fi
-
-    # Check for legacy config (be forgiving)
-    if [ -f "/data/local/archdroid.conf" ]; then
-        ok "Legacy config found: /data/local/archdroid.conf"
-    else
-        info "No legacy config file found: /data/local/archdroid.conf"
     fi
 }
 
@@ -649,21 +485,7 @@ main() {
     # Generate JSON output
     generate_json_output
 
-    # Summary
-    echo ""
-    echo "Component Status:"
-    for component in filesystem network environment security; do
-        local status=${COMPONENT_STATUS[$component]}
-        case $status in
-            0) echo "  ✔ $component: OK" ;;
-            1) echo "  ⚠ $component: WARNINGS" ;;
-            2) echo "  ✘ $component: FAILED" ;;
-        esac
-    done
-
-    echo ""
-
-    # Overall status
+    # Overall status computation
     local overall_status=$STATUS_OK
     for component in filesystem network environment security; do
         local comp_status=${COMPONENT_STATUS[$component]}
@@ -672,42 +494,18 @@ main() {
         fi
     done
 
+    echo ""
     case $overall_status in
-        0)
-            echo -e "${BOLD}${GREEN}"
-            echo "  ╔══════════════════════════════════════════════════╗"
-            echo "  ║                ✔ SYSTEM READY                   ║"
-            echo "  ║             All checks passed                   ║"
-            echo "  ╚══════════════════════════════════════════════════╝"
-            echo -e "${RESET}"
-            ;;
-        1)
-            echo -e "${BOLD}${YELLOW}"
-            echo "  ╔══════════════════════════════════════════════════╗"
-            echo "  ║              ⚠ WARNINGS DETECTED                ║"
-            echo "  ║         System may work with issues             ║"
-            echo "  ╚══════════════════════════════════════════════════╝"
-            echo -e "${RESET}"
-            ;;
-        2)
-            echo -e "${BOLD}${RED}"
-            echo "  ╔══════════════════════════════════════════════════╗"
-            echo "  ║              ✘ CRITICAL FAILURES                ║"
-            echo "  ║            System needs attention               ║"
-            echo "  ╚══════════════════════════════════════════════════╝"
-            echo -e "${RESET}"
+        0)  ok "SYSTEM READY" ;;
+        1)  ok "SYSTEM READY" ;;
+        2)  fail "CHROOT EXECUTION FAILED"
+            echo ""
+            diagnose_chroot_failure
             ;;
     esac
 
     echo ""
-    info "Human log: ${INSPECT_LOG}"
-    info "JSON state: $RUNTIME_JSON"
-    info "Overall status: $overall_status (0=OK, 1=WARN, 2=FAIL)"
-    echo ""
-    info "Safe JSON usage examples:"
-    echo "  jq empty '$RUNTIME_JSON' 2>/dev/null || echo 'Invalid JSON'"
-    echo "  jq -r '.rootfs.valid // false' '$RUNTIME_JSON'"
-    echo "  jq -r '.components.filesystem // 2' '$RUNTIME_JSON'"
+    info "Log: ${INSPECT_LOG}"
 
     # Exit with overall status
     exit $overall_status

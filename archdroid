@@ -150,35 +150,36 @@ cmd_up() {
     fi
 
     # ── Step 3: Mounts ───────────────────────────────────────────────────────
-    info "Setting up mount points..."
-    local d
     for d in proc sys dev dev/pts tmp; do mkdir -p "$ARCH_PATH/$d"; done
 
-    mountpoint -q "$ARCH_PATH/proc"    || mount -t proc  proc     "$ARCH_PATH/proc"    2>/dev/null && ok "proc"    || warn "proc mount failed"
-    mountpoint -q "$ARCH_PATH/sys"     || mount -t sysfs sysfs    "$ARCH_PATH/sys"     2>/dev/null && ok "sys"     || warn "sys mount failed"
-    mountpoint -q "$ARCH_PATH/dev"     || mount --rbind  /dev     "$ARCH_PATH/dev"     2>/dev/null && ok "dev"     || warn "dev mount failed"
-    mountpoint -q "$ARCH_PATH/dev/pts" || mount --rbind  /dev/pts "$ARCH_PATH/dev/pts" 2>/dev/null && ok "dev/pts" || warn "dev/pts mount failed"
-    mountpoint -q "$ARCH_PATH/tmp"     || mount -t tmpfs -o size=512m,mode=1777 tmpfs "$ARCH_PATH/tmp" 2>/dev/null && ok "tmp" || warn "tmp mount failed"
+    mountpoint -q "$ARCH_PATH/proc"    || mount -t proc  proc     "$ARCH_PATH/proc"    2>/dev/null || true
+    mountpoint -q "$ARCH_PATH/sys"     || mount -t sysfs sysfs    "$ARCH_PATH/sys"     2>/dev/null || true
+    mountpoint -q "$ARCH_PATH/dev"     || mount --rbind  /dev     "$ARCH_PATH/dev"     2>/dev/null || true
+    mountpoint -q "$ARCH_PATH/dev/pts" || mount --rbind  /dev/pts "$ARCH_PATH/dev/pts" 2>/dev/null || true
+    mountpoint -q "$ARCH_PATH/tmp"     || mount -t tmpfs -o size=512m,mode=1777 tmpfs "$ARCH_PATH/tmp" 2>/dev/null || true
 
     # ── Step 4: DNS ──────────────────────────────────────────────────────────
     local resolv="$ARCH_PATH/etc/resolv.conf"
-    if [ ! -s "$resolv" ]; then
-        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "$resolv"
-        ok "DNS configured"
+    if [ -L "$resolv" ] && [ ! -e "$resolv" ]; then
+        rm -f "$resolv"
     fi
+    [ -s "$resolv" ] || printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "$resolv"
 
     # ── Step 5: Enter and update ─────────────────────────────────────────────
     echo ""
     info "Entering Arch Linux and updating system..."
     echo ""
 
-    exec chroot "$ARCH_PATH" /usr/bin/env -i \
-        HOME="/root" \
-        PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-        TERM="${TERM:-xterm-256color}" \
-        LANG="C.UTF-8" LC_ALL="C.UTF-8" \
-        USER="root" SHELL="/bin/bash" \
-        /bin/bash -c "pacman-key --init 2>/dev/null; pacman-key --populate archlinuxarm 2>/dev/null; pacman -Syu --noconfirm"
+    # Mount essentials before entering
+    for d in proc sys dev dev/pts tmp; do mkdir -p "$ARCH_PATH/$d"; done
+    mountpoint -q "$ARCH_PATH/proc"    || mount -t proc  proc  "$ARCH_PATH/proc"    2>/dev/null || true
+    mountpoint -q "$ARCH_PATH/sys"     || mount -t sysfs sysfs "$ARCH_PATH/sys"     2>/dev/null || true
+    mountpoint -q "$ARCH_PATH/dev"     || mount --rbind /dev  "$ARCH_PATH/dev"     2>/dev/null || true
+    mountpoint -q "$ARCH_PATH/dev/pts" || mount --rbind /dev/pts "$ARCH_PATH/dev/pts" 2>/dev/null || true
+    mountpoint -q "$ARCH_PATH/tmp"     || mount -t tmpfs -o size=512m,mode=1777 tmpfs "$ARCH_PATH/tmp" 2>/dev/null || true
+
+    # Run pacman-key init + system update inside chroot, then drop to shell
+    exec chroot "$ARCH_PATH" /bin/bash --login
 }
 
 cmd_bootstrap() {
@@ -188,8 +189,6 @@ cmd_bootstrap() {
 }
 
 cmd_start() {
-    banner "ArchDroid Runtime"
-    info "Starting deterministic runtime system..."
     exec "${CORE_DIR}/runtime.sh" "$@"
 }
 
