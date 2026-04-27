@@ -135,7 +135,79 @@ banner() {
     echo -e "${RESET}"
 }
 
-# ─── ADAPTIVE GATE: VALIDATE AND AUTO-FIX SYSTEM READINESS ──────────────────
+# ─── PREPARE EXEC ENVIRONMENT ───────────────────────────────────────────────
+# Must run BEFORE any chroot attempt or bind-mount setup.
+# Order matters: noexec remount → symlink fix → then bind mounts.
+prepare_exec_environment() {
+    info "Preparing Android exec environment..."
+
+    # Fix 4: Remount /data exec BEFORE any bind-mounts.
+    # On F2FS/Android, if bind-mounts are set up first and /data is still
+    # noexec, the noexec flag propagates into the bind-mount namespace and
+    # a later remount won't fix it. Do it here, before anything else.
+    local data_mount
+    data_mount=$(mount 2>/dev/null | awk '$3 == "/data" {print}' | head -1)
+    if echo "$data_mount" | grep -q "noexec"; then
+        warn "/data is noexec — remounting exec (resets on reboot)"
+        if mount -o remount,exec /data 2>/dev/null; then
+            ok "/data → exec"
+        else
+            warn "remount exec failed — chroot may fail"
+        fi
+    else
+        ok "/data: exec flag OK"
+    fi
+
+    # Fix 1: Symlink convergence.
+    # Arch Linux ARM uses merged /usr (bin→usr/bin, lib→usr/lib).
+    # Some Android tar extractions break relative symlinks into dangling
+    # paths. Force them to the correct absolute targets.
+    for link in lib lib64 bin sbin; do
+        local target="usr/$link"
+        local lpath="$ARCH_PATH/$link"
+        # Only fix if the target dir actually exists in /usr
+        if [ -d "$ARCH_PATH/$target" ]; then
+            if [ -L "$lpath" ]; then
+                local current
+                current=$(readlink "$lpath")
+                if [ "$current" != "$target" ] && [ "$current" != "/usr/$link" ]; then
+                    ln -sf "$target" "$lpath" 2>/dev/null || true
+                    ok "Relinked $link → $target"
+                fi
+            elif [ ! -e "$lpath" ]; then
+                ln -sf "$target" "$lpath" 2>/dev/null || true
+                ok "Created symlink $link → $target"
+            fi
+        fi
+    done
+
+    # Fix 2: ELF interpreter validation — fail early with a clear message
+    # rather than a cryptic "No such file or directory" from chroot.
+    local bash_bin="$ARCH_PATH/bin/bash"
+    if [ -f "$bash_bin" ]; then
+        local interp
+        interp=$(readelf -l "$bash_bin" 2>/dev/null \
+            | awk '/interpreter/ {gsub(/[\[\]]/,""); print $NF}')
+        if [ -n "$interp" ]; then
+            if [ ! -f "$ARCH_PATH$interp" ]; then
+                fail "ELF interpreter not found inside rootfs: $interp"
+                fail "This is why chroot says 'No such file or directory'"
+                fail "The file exists but its dynamic linker does not."
+                fail "Re-run: archdroid bootstrap"
+                exit 1
+            else
+                ok "ELF interpreter present: $interp"
+            fi
+        fi
+    fi
+
+    # Fix 3: Ensure /etc exists before anything tries to write resolv.conf
+    mkdir -p "$ARCH_PATH/etc"
+
+    echo "SUCCESS: exec environment prepared" >> "$LOG_FILE"
+}
+
+
 adaptive_gate_startup() {
     banner "ArchDroid Runtime with Auto-Fix"
 
@@ -638,6 +710,7 @@ main() {
     # Philosophy: Fix what can be fixed automatically, warn about what can't,
     # but don't prevent usage of working installations
 
+    prepare_exec_environment      # Fix 1-4: Android compatibility & environment sanity
     adaptive_gate_startup          # Validate with auto-fixes
     enforce_environment           # Clean environment variables (deterministic)
     smart_enforce_mounts          # Smart mount handling with fallbacks

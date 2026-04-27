@@ -122,6 +122,12 @@ diagnose_chroot_failure() {
             if [ ! -f "$interp_in_rootfs" ]; then
                 fail "ELF interpreter missing inside rootfs: $interp"
                 echo "     This means /bin/bash cannot execute — rootfs may be incomplete"
+
+                # Fix 1: Check if this is just a broken symlink that we can warn about
+                if [ -L "$ARCH_PATH/lib" ] && [ ! -e "$ARCH_PATH/lib" ]; then
+                    warn "The /lib symlink points to a missing target."
+                    warn "This is common on Android extractions. Run 'archdroid start' to auto-fix."
+                fi
             else
                 ok "ELF interpreter present: $interp"
             fi
@@ -219,7 +225,9 @@ autofix_dns() {
 
     autofix "Fixing DNS configuration..."
     local resolv_conf="$ARCH_PATH/etc/resolv.conf"
-    mkdir -p "$ARCH_PATH/etc"
+
+    # Fix 3: Ensure /etc exists before anything tries to write resolv.conf
+    mkdir -p "$ARCH_PATH/etc" 2>/dev/null || true
 
     # Copy host DNS first
     if [ -f /etc/resolv.conf ]; then
