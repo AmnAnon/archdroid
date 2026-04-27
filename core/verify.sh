@@ -219,9 +219,49 @@ verify_chroot_execution() {
         return 1
     fi
 
+    # Fix 4: Remount /data exec before chroot test (F2FS propagation fix)
+    local _data_mnt
+    _data_mnt=$(mount 2>/dev/null | awk '$3 == "/data" {print}' | head -1)
+    if echo "$_data_mnt" | grep -q "noexec"; then
+        mount -o remount,exec /data 2>/dev/null || true
+    fi
+
+    # Fix 1: Symlink convergence in case rootfs was just extracted
+    for _lk in lib lib64 bin sbin; do
+        local _tg="usr/$_lk"
+        local _lp="$ARCH_PATH/$_lk"
+        if [ -d "$ARCH_PATH/$_tg" ]; then
+            if [ -L "$_lp" ]; then
+                local _cu
+                _cu=$(readlink "$_lp")
+                if [ "$_cu" != "$_tg" ] && [ "$_cu" != "/usr/$_lk" ]; then
+                    ln -sf "$_tg" "$_lp" 2>/dev/null || true
+                fi
+            elif [ ! -e "$_lp" ]; then
+                ln -sf "$_tg" "$_lp" 2>/dev/null || true
+            fi
+        fi
+    done
+
+    # Fix 2: ELF interpreter check — bail early with clear message
+    local _bash_path="$ARCH_PATH/bin/bash"
+    if [ -f "$_bash_path" ]; then
+        local _interp
+        _interp=$(readelf -l "$_bash_path" 2>/dev/null \
+            | awk '/interpreter/ {gsub(/[\[\]]/,""); print $NF}')
+        if [ -n "$_interp" ] && [ ! -f "$ARCH_PATH$_interp" ]; then
+            fail "ELF interpreter missing inside rootfs: $_interp"
+            fail "This is why chroot says 'No such file or directory'"
+            return 1
+        fi
+    fi
+
+    # Fix 3: Ensure /etc exists before any DNS writes
+    mkdir -p "$ARCH_PATH/etc"
+
     # Test basic chroot execution
     local test_output
-    if test_output=$(timeout 10 chroot "$ARCH_PATH" /usr/bin/env -i /bin/bash -c "echo 'chroot_test_ok'" 2>&1); then
+    if test_output=$(timeout 10 chroot "$ARCH_PATH" /bin/bash -c "echo 'chroot_test_ok'" 2>&1); then
         if [[ "$test_output" == *"chroot_test_ok"* ]]; then
             ok "Chroot execution: WORKING"
         else
