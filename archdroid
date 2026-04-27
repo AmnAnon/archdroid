@@ -72,17 +72,13 @@ cmd_up() {
     # ── Step 1a: SELinux fix BEFORE bootstrap ────────────────────────────────
     # SELinux blocks chroot execution entirely. Must be fixed before bootstrap
     # runs its final-location chroot test, or the install fails on Enforcing.
-    if command -v getenforce >/dev/null 2>&1; then
-        local selinux_mode
-        selinux_mode=$(getenforce 2>/dev/null || echo "unknown")
-        if [ "$selinux_mode" = "Enforcing" ]; then
-            if setenforce 0 2>/dev/null; then
-                :  # silently fixed
-            else
-                fail "setenforce 0 failed — are you root?"
-                exit 1
-            fi
-        fi
+    # Try setenforce directly (available on all Android as root); skip
+    # getenforce check since it may not be in PATH on some devices.
+    if setenforce 0 2>/dev/null; then
+        :  # fixed silently
+    else
+        # setenforce may not exist on non-SELinux kernels — that's fine
+        :
     fi
 
     # ── Step 1b: noexec on /data ─────────────────────────────────────────────

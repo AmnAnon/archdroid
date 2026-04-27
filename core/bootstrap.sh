@@ -643,14 +643,19 @@ check_system_requirements() {
     # Final-location execution test — chroot in a subshell, result via exit code
     # The subshell isolates side effects; the exit code tells us if chroot works.
     local final_exec_ok=false
-    if (
+    (
+        # SELinux — most common cause of chroot failure on Android
+        setenforce 0 2>/dev/null || true
+
         mount -o remount,exec /data 2>/dev/null || true
         mkdir -p "$ARCH_PATH/proc" "$ARCH_PATH/sys" "$ARCH_PATH/dev" "$ARCH_PATH/etc"
         [ -L "$ARCH_PATH/lib" ] && [ ! -e "$ARCH_PATH/lib" ] && ln -sf usr/lib "$ARCH_PATH/lib" 2>/dev/null || true
         [ ! -c "$ARCH_PATH/dev/tty" ] && mknod -m 666 "$ARCH_PATH/dev/tty" c 5 0 2>/dev/null || true
 
         chroot "$ARCH_PATH" /bin/bash -c 'exit 0' >/dev/null 2>&1
-    ) 2>/dev/null; then
+    ) 2>/dev/null
+    local _final_exit=$?
+    if [ "$_final_exit" -eq 0 ]; then
         final_exec_ok=true
     fi
 
