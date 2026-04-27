@@ -692,28 +692,15 @@ resilient_entry() {
     # Try multiple entry methods for maximum compatibility
     info "Attempting chroot entry with fallback methods..."
 
-    # Method 1: Standard env -i approach (cleanest)
-    if [ -n "$env_path" ]; then
-        {
-            echo "Attempting method 1: env -i approach"
-            echo "Command: chroot $ARCH_PATH ${env_path#$ARCH_PATH} -i [clean env] $SHELL --login"
-        } >> "$LOG_FILE"
-        add_log_integrity "$LOG_FILE" "RUNTIME_COMPLETE"
-
-        # Execute with clean isolated environment
-        exec chroot "$ARCH_PATH" "${env_path#$ARCH_PATH}" -i \
-            "${clean_env_vars[@]}" \
-            "$SHELL" --login 2>/dev/null
-    fi
-
-    # Method 2: Direct shell approach
+    # Method 1: Direct shell approach (most reliable).
+    # Skip env -i wrapper — it's an extra binary that may not work in
+    # a fresh chroot, and --login already provides a clean environment.
     {
-        echo "Fallback method 2: direct shell approach"
-        echo "Command: chroot $ARCH_PATH $SHELL --login"
+        echo "Method 1: direct shell approach"
+        echo "Command: export env vars, then chroot $ARCH_PATH $SHELL --login"
     } >> "$LOG_FILE"
     add_log_integrity "$LOG_FILE" "RUNTIME_COMPLETE"
 
-    # Export environment and try direct approach
     for env_var in "${clean_env_vars[@]}"; do
         export "$env_var"
     done
